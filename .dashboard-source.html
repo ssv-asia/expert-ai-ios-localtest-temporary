@@ -1,0 +1,2948 @@
+
+<!--kg-card-begin: html-->
+
+<!--kg-card-begin: html-->
+<!--
+  Expert AI &#8212; Account Console
+  Ghost embed. Everything is scoped under #xai-console so nothing leaks into
+  the theme and nothing from the theme (buttons, .badge, .panel, .toggle,
+  generic resets, etc.) can override this widget's styles. The previous
+  version used bare selectors (*, body, .panel, .toggle, .badge, button, a, etc.)
+  which is what broke the Weekly/Monthly toggle and the currency toggle when
+  pasted into a real Ghost page &#8212; the theme's own CSS for those very common
+  class names was winning the cascade. Same fix pattern as the working
+  AEC MCP embed (#xai-mcp) in this folder.
+
+  Sign-in: same auto-detect pattern as the MCP embed &#8212; fetch
+  /members/api/member/ (Ghost's own endpoint, same-origin, cookie-based) on
+  load. If the visitor is already signed in to ssv.asia, we skip the manual
+  email box entirely and silently exchange their email for a gateway session
+  via /auth/start. Only visitors with no Ghost session see the manual
+  sign-in box, and its CTA goes straight to the real portal:
+    https://ssv.asia/#/portal/signin
+    https://ssv.asia/#/portal/signup
+    https://ssv.asia/#/portal/           (account / manage)
+-->
+<div id="xai-console">
+<style>
+    #xai-console {
+        --bg: #1b1917;
+        --panel: #232019;
+        --panel-2: #2b2720;
+        --line: #39332b;
+        --line-2: #4c4438;
+        --ink: #ece6da;
+        --ink-hi: #f6f2e9;
+        --mut: #9c9284;
+        --mut-2: #6f665a;
+        --violet: #a855f7;
+        --violet-line: #7e22ce;
+        --teal: #5bb0a2;
+        --gold: #e0a53f;
+        --pink: #e8639e;
+        --grad-pop: linear-gradient(90deg, var(--teal), var(--violet) 55%, var(--pink));
+
+        /* Deliberately NOT `all: initial` here -- that resets every property
+           on this element, including layout ones the host page's own grid
+           (Ghost's .gh-canvas) needs to control, like grid-column and width.
+           An ID selector out-specifies the theme's own placement rule, so
+           `all: initial` silently strips it and the widget collapses into a
+           narrow implicit grid track. Only reset what actually needs it. */
+        display: block;
+        width: 100%;
+        text-align: left;
+        font-family: 'Space Grotesk', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        font-size: 16px;
+        font-weight: 400;
+        background: var(--bg);
+        color: var(--ink);
+        line-height: 1.5;
+        -webkit-font-smoothing: antialiased;
+        border-radius: 18px;
+        overflow: hidden;
+    }
+    #xai-console *, #xai-console *::before, #xai-console *::after {
+        box-sizing: border-box;
+        font-family: inherit;
+        line-height: inherit;
+        color: inherit;
+        margin: 0;
+        padding: 0;
+    }
+    #xai-console .mono {
+        font-family: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+        font-feature-settings: "tnum" 1;
+    }
+    #xai-console button, #xai-console a {
+        cursor: pointer;
+        border: none;
+        background: none;
+        color: inherit;
+        font-size: 14px;
+        text-decoration: none;
+        display: inline-block;
+    }
+    #xai-console button:focus-visible, #xai-console a:focus-visible, #xai-console input:focus-visible {
+        outline: 2px solid var(--violet);
+        outline-offset: 3px;
+    }
+    #xai-console button:disabled { cursor: default; }
+
+    /* Header */
+    #xai-console .header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 8px;
+        padding: 0 0 16px 0;
+        border-bottom: 1px solid var(--line);
+    }
+    #xai-console .brand {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-weight: 700;
+        font-size: 16px;
+        letter-spacing: 0.01em;
+    }
+    #xai-console .dot {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--violet);
+        box-shadow: 0 0 12px 1px rgba(168, 85, 247, 0.5);
+        flex: 0 0 auto;
+    }
+    #xai-console .brand small {
+        color: var(--mut);
+        font-weight: 500;
+        font-size: 12px;
+    }
+    #xai-console .authbtn {
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        padding: 8px 14px;
+        color: var(--ink);
+        font-weight: 500;
+        transition: border-color 0.15s, background 0.15s;
+        white-space: nowrap;
+    }
+    #xai-console .authbtn:hover {
+        border-color: var(--violet);
+        background: rgba(168, 85, 247, 0.07);
+    }
+    #xai-console .authbtn.primary {
+        background: var(--violet);
+        border-color: var(--violet);
+        color: #faf5f0;
+        font-weight: 600;
+    }
+    #xai-console .authbtn.primary:hover { filter: brightness(1.1); background: var(--violet); }
+    #xai-console .authbtn.primary:active { transform: scale(0.98); }
+    #xai-console .authbtn[disabled] { opacity: .5; }
+
+    #xai-console .tagline {
+        color: var(--mut);
+        font-size: 13.5px;
+        margin: 0 0 24px 0;
+    }
+
+    /* Sections */
+    #xai-console .sec {
+        display: flex;
+        align-items: baseline;
+        gap: 8px;
+        margin: 28px 0 12px 0;
+        font-size: 14px;
+    }
+    #xai-console .sec .tick { color: var(--violet); font-family: 'IBM Plex Mono', monospace; }
+    #xai-console .sec b { font-size: 15px; font-weight: 700; }
+    #xai-console .sec span:last-child { color: var(--mut); font-size: 12px; }
+    #xai-console .sec span#x-planexp { margin-left: auto; }
+    #xai-console .sec .mini-link {
+        color: var(--mut); font-size: 12px; padding: 2px 4px; border-radius: 6px;
+        transition: color .15s ease, background .15s ease, transform .5s ease;
+    }
+    #xai-console .sec .mini-link:hover { color: var(--ink-hi); background: rgba(168,85,247,.1); }
+    #xai-console .sec .mini-link:active { transform: scale(0.94); }
+    #xai-console #x-refresh.spin { animation: xaiSpin .5s linear; }
+    @keyframes xaiSpin { to { transform: rotate(360deg); } }
+
+    /* Panels */
+    #xai-console .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 14px;
+        padding: 20px;
+    }
+    #xai-console .panel + .sec { margin-top: 26px; }
+
+    /* Balance */
+    #xai-console .balance-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 14px;
+        margin-bottom: 16px;
+    }
+    #xai-console .balance-item {
+        background: var(--panel-2);
+        border: 1px solid var(--line-2);
+        border-radius: 11px;
+        padding: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        transition: border-color 0.15s;
+    }
+    #xai-console .balance-item:hover { border-color: var(--mut-2); }
+    #xai-console .balance-item .label {
+        font-size: 12px;
+        color: var(--mut);
+        display: flex;
+        align-items: center;
+        gap: 6px;
+    }
+    #xai-console .balance-item .label svg { width: 14px; height: 14px; flex: 0 0 auto; }
+    #xai-console .balance-item .amt {
+        font-size: 18px;
+        font-weight: 700;
+        color: var(--gold);
+        font-family: 'IBM Plex Mono', monospace;
+    }
+    #xai-console .balance-item .sub { font-size: 11px; color: var(--mut-2); }
+    #xai-console .plain-tag { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-hi); margin-bottom: 3px; }
+
+    #xai-console .plan-info {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 14px 0 0 0;
+        border-top: 1px dashed var(--line-2);
+        font-size: 13px;
+    }
+    #xai-console .plan-info b { color: var(--ink-hi); }
+    #xai-console .badge {
+        font-size: 11px;
+        color: var(--teal);
+        border: 1px solid rgba(91, 176, 162, 0.4);
+        border-radius: 20px;
+        padding: 3px 10px;
+        white-space: nowrap;
+    }
+    #xai-console .noplan-msg {
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px dashed var(--line-2);
+        color: var(--mut);
+        font-size: 13px;
+        line-height: 1.5;
+    }
+    #xai-console .apps-line {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 10px;
+    }
+    #xai-console .prod-chip {
+        background: var(--panel-2);
+        border: 1px solid var(--line-2);
+        border-radius: 9px;
+        padding: 6px 10px;
+        font-size: 11.5px;
+        line-height: 1.4;
+        transition: border-color .15s ease, transform .15s cubic-bezier(.2,.8,.2,1), background .15s ease;
+    }
+    #xai-console .prod-chip:hover { border-color: var(--violet); background: rgba(168,85,247,.08); transform: translateY(-1px); }
+    #xai-console .prod-chip b { display: block; color: var(--ink-hi); font-weight: 600; font-size: 12px; margin-bottom: 1px; }
+    #xai-console .prod-chip span { color: var(--mut); }
+    #xai-console .renew-line {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        background: rgba(168, 85, 247, 0.08);
+        border: 1px solid rgba(168, 85, 247, 0.25);
+        color: var(--ink);
+        font-size: 12.5px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+    }
+    #xai-console .renew-line.warn {
+        background: rgba(220, 100, 60, 0.1);
+        border-color: rgba(220, 100, 60, 0.35);
+    }
+    #xai-console .renew-line a {
+        color: var(--violet);
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    #xai-console .renew-line a:hover { text-decoration: underline; }
+
+    /* Sign in */
+    #xai-console .signin { display: flex; flex-direction: column; gap: 12px; }
+    #xai-console .signin p { color: var(--mut); font-size: 13.5px; margin: 0; }
+    #xai-console .signin-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+    #xai-console .signin-actions .authbtn { flex: 1; text-align: center; min-width: 120px; }
+    #xai-console .signin-alt {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        color: var(--mut-2);
+        font-size: 11.5px;
+        margin: 2px 0;
+    }
+    #xai-console .signin-alt::before, #xai-console .signin-alt::after {
+        content: "";
+        flex: 1;
+        height: 1px;
+        background: var(--line);
+    }
+    #xai-console .field { display: flex; gap: 8px; }
+    #xai-console input[type=email] {
+        flex: 1;
+        background: #151310;
+        border: 1px solid var(--line-2);
+        border-radius: 10px;
+        padding: 11px 13px;
+        color: var(--ink);
+        font-size: 14px;
+        min-width: 0;
+    }
+    #xai-console input[type=email]::placeholder { color: var(--mut-2); }
+    #xai-console input[type=email]:focus { outline: none; border-color: var(--violet); }
+
+    #xai-console .solid {
+        background: var(--violet);
+        color: #faf5f0;
+        font-weight: 600;
+        border-radius: 10px;
+        padding: 11px 16px;
+        transition: filter 0.15s, transform 0.1s;
+        white-space: nowrap;
+        font-size: 14px;
+    }
+    #xai-console .solid:hover { filter: brightness(1.1); }
+    #xai-console .solid:active:not(:disabled) { transform: scale(0.98); }
+    #xai-console .solid:disabled { opacity: 0.5; cursor: default; }
+
+    /* Purchase Console */
+    #xai-console .con-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 18px;
+        flex-wrap: wrap;
+    }
+    #xai-console .toggle {
+        display: flex;
+        background: #151310;
+        border: 1px solid var(--line);
+        border-radius: 11px;
+        padding: 4px;
+        gap: 4px;
+        flex: 1;
+        min-width: 200px;
+    }
+    #xai-console .toggle button {
+        flex: 1;
+        padding: 9px 8px;
+        border-radius: 8px;
+        font-size: 13px;
+        font-weight: 500;
+        color: var(--mut);
+        transition: background .18s cubic-bezier(.2,.8,.2,1), color .18s ease, box-shadow .18s ease, transform .12s ease;
+        background: transparent;
+    }
+    #xai-console .toggle button:active { transform: scale(0.96); }
+    #xai-console .toggle button.on {
+        background: #312c24;
+        color: var(--ink-hi);
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    }
+    #xai-console .toggle .badge-small { color: var(--teal); font-size: 10px; margin-left: 4px; }
+
+    #xai-console .cur-select {
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 9px 10px;
+        font-size: 13px;
+        color: var(--ink-hi);
+        font-family: 'IBM Plex Mono', monospace;
+        background: #151310;
+        flex: 0 0 auto;
+        transition: border-color .15s ease;
+    }
+    #xai-console .cur-select:focus { outline: none; border-color: var(--violet); }
+    #xai-console .cur-select option { background: #151310; color: var(--ink-hi); }
+
+    #xai-console .tier-avatar-wrap { display: flex; justify-content: center; margin: 4px 0 0 0; }
+    #xai-console .tier-avatar-frame {
+        width: 192px;
+        aspect-ratio: 1;
+        display: grid;
+        place-items: center;
+        overflow: visible;
+    }
+    #xai-console .tier-avatar {
+        width: 100%; height: 100%; object-fit: contain;
+        filter: drop-shadow(0 6px 18px rgba(168, 85, 247, 0.35));
+        transform: translateY(var(--avatar-y, 0px));
+        transition: transform 220ms ease, opacity 220ms ease;
+    }
+    #xai-console .tier-avatar.swap { opacity: 0; transform: translateY(var(--avatar-y, 0px)) scale(0.94); }
+    @media (max-width: 480px) {
+        #xai-console .tier-avatar-frame { width: 160px; }
+    }
+    #xai-console .amount { text-align: center; margin: 10px 0 4px 0; }
+    #xai-console .amount .cur { font-size: 24px; color: var(--mut); vertical-align: top; font-weight: 500; }
+    #xai-console .amount .n {
+        font-size: 56px;
+        font-weight: 700;
+        letter-spacing: -0.025em;
+        font-family: 'IBM Plex Mono', monospace;
+        color: var(--violet);
+    }
+    #xai-console .amount .per { color: var(--mut); font-size: 13px; }
+
+    #xai-console .reco-badge {
+        display: inline-block;
+        margin-left: 6px;
+        padding: 1px 8px;
+        border-radius: 999px;
+        background: linear-gradient(135deg, var(--gold), var(--pink));
+        color: #1b1917;
+        font-size: 10.5px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        vertical-align: middle;
+    }
+    #xai-console .tiername {
+        text-align: center;
+        color: var(--violet);
+        font-size: 12.5px;
+        font-weight: 600;
+        letter-spacing: 0.03em;
+        margin-bottom: 20px;
+        min-height: 16px;
+    }
+
+    /* +/- stepper (replaces the old range slider) */
+    #xai-console .stepper {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+        margin: 8px 0 24px 0;
+    }
+    #xai-console .step-btn {
+        flex: 0 0 auto;
+        width: 40px;
+        height: 40px;
+        border-radius: 50%;
+        background: var(--panel-2);
+        border: 1px solid var(--line-2);
+        color: var(--ink-hi);
+        font-size: 20px;
+        font-weight: 600;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        transition: border-color .15s, background .15s, transform .1s;
+        user-select: none;
+    }
+    #xai-console .step-btn:hover:not(:disabled) { border-color: var(--violet); background: rgba(168,85,247,.1); }
+    #xai-console .step-btn:active:not(:disabled) { transform: scale(0.92); }
+    #xai-console .step-btn:disabled { opacity: .35; cursor: default; }
+    #xai-console .step-track {
+        flex: 1;
+        height: 5px;
+        border-radius: 6px;
+        background: var(--line-2);
+        overflow: hidden;
+        position: relative;
+    }
+    #xai-console .step-fill {
+        position: absolute;
+        left: 0; top: 0; bottom: 0;
+        background: var(--violet);
+        border-radius: 6px;
+        transition: width .28s cubic-bezier(.2,.8,.2,1);
+        width: 40%;
+    }
+    #xai-console .step-dots {
+        display: flex;
+        justify-content: space-between;
+        margin-top: -18px;
+        padding: 0 1px;
+        pointer-events: none;
+    }
+    #xai-console .step-dots i {
+        width: 4px; height: 4px; border-radius: 50%;
+        background: var(--bg);
+        display: block;
+        margin-top: 8px;
+    }
+
+    /* Breakdown */
+    #xai-console .breakdown { border-top: 1px solid var(--line); padding-top: 10px; }
+    #xai-console .prow { display: flex; align-items: center; gap: 12px; padding: 12px 0; }
+    #xai-console .prow .logo {
+        width: 36px;
+        height: 36px;
+        border-radius: 9px;
+        flex: 0 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-weight: 700;
+        font-size: 15px;
+        overflow: hidden;
+        background: var(--panel-2);
+    }
+    #xai-console .prow .logo svg,
+    #xai-console .prow .logo img { width: 60%; height: 60%; object-fit: contain; }
+    #xai-console .brand-icon { flex: 0 0 auto; object-fit: contain; vertical-align: -2px; }
+    #xai-console .prow .pinfo { display: flex; flex-direction: column; line-height: 1.3; }
+    #xai-console .prow .pinfo b { font-size: 14px; font-weight: 600; }
+    #xai-console .prow .pinfo em { font-style: normal; color: var(--mut); font-size: 11.5px; }
+    #xai-console .prow .ptok {
+        margin-left: auto;
+        font-size: 14.5px;
+        color: var(--ink-hi);
+        font-weight: 600;
+        font-family: 'IBM Plex Mono', monospace;
+    }
+    #xai-console .prow.headline { background: rgba(168,85,247,.06); border-radius: 12px; margin: 0 -8px 4px -8px; padding: 12px 8px; }
+    #xai-console .prow.headline .logo { background: rgba(168,85,247,.14); }
+    #xai-console .unlimited-badge {
+        display: inline-block;
+        margin-left: 8px;
+        font-size: 10px;
+        font-weight: 700;
+        letter-spacing: 0.02em;
+        color: var(--teal);
+        background: rgba(91, 176, 162, 0.12);
+        border: 1px solid rgba(91, 176, 162, 0.4);
+        border-radius: 20px;
+        padding: 2px 8px;
+        vertical-align: middle;
+    }
+
+    #xai-console .brow { display: flex; justify-content: space-between; align-items: baseline; font-size: 14px; }
+    #xai-console .brow.total {
+        border-top: 1px dashed var(--line-2);
+        margin-top: 8px;
+        padding-top: 14px;
+        font-size: 16px;
+        font-weight: 700;
+    }
+    /* The grand total is the emotional payoff of this whole card -- deliberately the single
+       biggest, most saturated number on the page (bigger than the amount at the top). */
+    #xai-console .brow.total .mono {
+        font-size: 26px;
+        color: var(--violet);
+        text-shadow: 0 0 20px rgba(168, 85, 247, 0.35);
+    }
+
+    #xai-console .buy {
+        width: 100%;
+        margin-top: 20px;
+        background: var(--violet);
+        color: #faf5f0;
+        font-weight: 700;
+        font-size: 15px;
+        border-radius: 12px;
+        padding: 14px;
+        transition: filter 0.15s, transform 0.1s;
+    }
+    #xai-console .buy:hover { filter: brightness(1.1); }
+    #xai-console .buy:active:not(:disabled) { transform: scale(0.99); }
+    #xai-console .buy:disabled { opacity: .55; cursor: default; }
+
+    #xai-console .fineprint { text-align: center; color: var(--mut); font-size: 11.5px; margin-top: 12px; line-height: 1.6; }
+    #xai-console .payline { text-align: center; color: var(--mut-2); font-size: 10.5px; margin-top: 8px; }
+
+    /* MCP connector + Memory + Downloads */
+    #xai-console .mcp-copy { color: var(--mut); font-size: 13px; margin-bottom: 14px; line-height: 1.5; }
+    #xai-console .mcp-steps { color: var(--mut); font-size: 12.5px; padding-left: 1.15rem; margin: 12px 0 0; }
+    #xai-console .mcp-steps li { margin: 5px 0; }
+    #xai-console .mcp-steps b { color: var(--ink-hi); font-weight: 600; }
+    #xai-console .mcp-fine { font-size: 11px; color: var(--mut-2); text-align: center; margin: 10px 0 0; }
+    #xai-console .sec span a { color: var(--violet); font-weight: 600; text-decoration: none; }
+    #xai-console .sec span a:hover { text-decoration: underline; }
+
+    /* Tier badge (header) */
+    #xai-console .tier-badge {
+        font-size: 10.5px; font-weight: 700; letter-spacing: .02em; color: #1b1917;
+        background: linear-gradient(90deg, var(--gold), var(--pink));
+        border: none;
+        border-radius: 20px; padding: 3px 9px; margin-left: 6px; vertical-align: middle;
+    }
+
+    /* Balance / Usage tabs */
+    #xai-console .bal-tabs { display: flex; gap: 4px; background: #151310; border: 1px solid var(--line); border-radius: 10px; padding: 4px; margin-bottom: 16px; }
+    #xai-console .bal-tab { flex: 1; padding: 7px 8px; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--mut); background: transparent; transition: background .18s cubic-bezier(.2,.8,.2,1), color .18s ease; }
+    #xai-console .bal-tab.on { background: #312c24; color: var(--ink-hi); }
+    #xai-console .usage-row { margin-bottom: 14px; }
+    #xai-console .usage-row .u-head { display: flex; justify-content: space-between; font-size: 12.5px; margin-bottom: 6px; }
+    #xai-console .usage-row .u-head b { color: var(--ink-hi); font-weight: 600; }
+    #xai-console .usage-row .u-head span { color: var(--mut); font-family: 'IBM Plex Mono', monospace; font-size: 11.5px; }
+    #xai-console .usage-track { height: 7px; border-radius: 6px; background: var(--line-2); overflow: hidden; }
+    #xai-console .usage-fill { height: 100%; border-radius: 6px; background: linear-gradient(90deg, var(--teal), var(--violet)); transition: width .3s cubic-bezier(.2,.8,.2,1); }
+    #xai-console .usage-note { font-size: 11px; color: var(--mut-2); line-height: 1.5; margin-top: 4px; }
+    #xai-console .mcp-msg { margin-top: 12px; padding: 10px 13px; border-radius: 10px; display: none; font-size: 12.5px; }
+    #xai-console .mcp-msg.ok  { display: block; background: rgba(91,176,162,.14); color: var(--teal); }
+    #xai-console .mcp-msg.err { display: block; background: rgba(220,100,60,.14); color: #e08a6a; }
+    #xai-console .mcp-msg.info{ display: block; background: rgba(168,85,247,.12); color: var(--violet); }
+    #xai-console .presets { display: grid; grid-template-columns: repeat(4,1fr); gap: 8px; }
+    #xai-console .presets button {
+        background: var(--panel-2); color: var(--ink); border: 1.5px solid transparent; border-radius: 10px;
+        padding: 9px 0; font-size: 13px; font-weight: 600; transition: border-color .15s ease, transform .12s ease;
+    }
+    #xai-console .presets button:active { transform: scale(0.94); }
+    #xai-console .presets button.on { border-color: var(--violet); color: var(--violet); }
+    #xai-console .urlbox { display: flex; gap: 8px; margin: 10px 0 4px 0; }
+    #xai-console .urlbox input {
+        flex: 1; min-width: 0; background: #151310; border: 1.5px solid var(--line-2); border-radius: 10px;
+        color: var(--ink); font: 11.5px/1.4 'IBM Plex Mono', monospace; padding: 10px 12px;
+    }
+    #xai-console .urlbox button {
+        background: var(--violet); color: #faf5f0; border: 0; border-radius: 10px; padding: 0 18px;
+        font-weight: 600; white-space: nowrap; transition: filter .15s ease, transform .12s ease;
+    }
+    #xai-console .urlbox button:hover { filter: brightness(1.1); }
+    #xai-console .urlbox button:active { transform: scale(0.94); }
+    #xai-console .mem-box {
+        width: 100%; min-height: 180px; resize: vertical; background: #151310; border: 1px solid var(--line-2);
+        border-radius: 10px; color: var(--ink); font: 14.5px/1.6 inherit; padding: 14px; margin-bottom: 8px;
+        transition: border-color .15s ease;
+    }
+    #xai-console .mem-box:focus { outline: none; border-color: var(--violet); }
+    #xai-console .mem-row { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+    #xai-console .mem-status { font-size: 11.5px; color: var(--mut-2); }
+    #xai-console .mem-count { font-size: 11px; color: var(--mut-2); font-family: 'IBM Plex Mono', monospace; text-align: right; margin-bottom: 10px; }
+    #xai-console .mem-count.near-limit { color: #e08a6a; }
+    #xai-console .dl-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    #xai-console .dl-card {
+        background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 12px; padding: 13px;
+        display: flex; flex-direction: column; gap: 6px; transition: border-color .15s ease, transform .15s cubic-bezier(.2,.8,.2,1);
+    }
+    #xai-console .dl-card:hover { border-color: var(--violet); transform: translateY(-1px); }
+    #xai-console .dl-card b { font-size: 13px; color: var(--ink-hi); }
+    #xai-console .dl-card p { font-size: 11.5px; color: var(--mut); line-height: 1.4; margin: 0; }
+    #xai-console .dl-card a.authbtn { text-align: center; margin-top: 2px; font-size: 12.5px; padding: 7px 10px; }
+    #xai-console .dl-lock { font-size: 10.5px; color: var(--mut-2); }
+    #xai-console .dl-unlocked { font-size: 10.5px; color: var(--teal); font-weight: 600; }
+    #xai-console .dl-soon { font-size: 10.5px; color: var(--mut-2); line-height: 1.5; margin-top: 2px; }
+    #xai-console .dl-locked {
+        background: transparent; border: 1.5px dashed var(--line-2); color: var(--mut);
+        border-radius: 10px; padding: 7px 10px; font-size: 12.5px; font-weight: 500; text-align: center;
+        transition: border-color .15s ease, color .15s ease;
+    }
+    #xai-console .dl-locked:hover { border-color: var(--violet); color: var(--violet); }
+    #xai-console .dl-soon a { color: var(--violet); text-decoration: none; font-weight: 600; }
+    #xai-console .dl-soon a:hover { text-decoration: underline; }
+    @media (max-width: 480px) { #xai-console .dl-grid { grid-template-columns: 1fr; } }
+
+    #xai-console .foot { margin-top: 32px; text-align: center; color: var(--mut); font-size: 12px; line-height: 2; }
+    #xai-console .foot a {
+        color: var(--mut);
+        text-decoration: none;
+        border-bottom: 1px solid var(--line-2);
+        transition: color 0.15s;
+    }
+    #xai-console .foot a:hover { color: var(--ink); }
+
+    #xai-console .hidden { display: none !important; }
+
+    #xai-console .purchase-modal-overlay {
+        position: fixed; inset: 0; z-index: 10000;
+        background: rgba(10,9,7,.72);
+        display: flex; align-items: center; justify-content: center;
+        padding: 20px;
+    }
+    #xai-console .purchase-modal {
+        background: var(--panel); border: 1px solid var(--line-2); border-radius: 16px;
+        padding: 28px 24px 22px; max-width: 360px; width: 100%;
+        text-align: center; position: relative;
+        box-shadow: 0 20px 60px rgba(0,0,0,.5);
+    }
+    #xai-console .purchase-modal-close {
+        position: absolute; top: 10px; right: 12px;
+        background: none; border: none; color: var(--mut); font-size: 20px; line-height: 1;
+        cursor: pointer; padding: 4px;
+    }
+    #xai-console .purchase-modal-close:hover { color: var(--ink-hi); }
+    #xai-console .purchase-modal-title {
+        font-size: 18px; font-weight: 700; color: var(--ink-hi); margin-bottom: 10px;
+    }
+    #xai-console .purchase-modal.error .purchase-modal-title { color: #f38b7a; }
+    #xai-console .purchase-modal-body {
+        font-size: 13.5px; color: var(--mut); line-height: 1.5; margin-bottom: 20px;
+    }
+    #xai-console .purchase-modal-body b { color: var(--violet); }
+    #xai-console .purchase-modal-ok {
+        background: var(--violet); color: #fff; border: none; border-radius: 10px;
+        padding: 10px 28px; font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #xai-console .purchase-modal-ok:hover { opacity: .9; }
+    #xai-console .purchase-modal.error .purchase-modal-ok { background: #c0392b; }
+    #xai-console .purchase-modal-actions { display: flex; gap: 10px; justify-content: center; }
+    #xai-console .purchase-modal-actions .purchase-modal-ok,
+    #xai-console .purchase-modal-actions .purchase-modal-secondary { flex: 1; padding: 10px 16px; }
+    #xai-console .purchase-modal-secondary {
+        background: transparent; color: var(--ink); border: 1px solid var(--line-2); border-radius: 10px;
+        font-size: 14px; font-weight: 600; cursor: pointer;
+    }
+    #xai-console .purchase-modal-secondary:hover { border-color: var(--mut); }
+    #xai-console .purchase-modal-ok.danger { background: #c0392b; }
+
+    @keyframes xai-gift-in {
+        0% { opacity: 0; transform: scale(.85); }
+        60% { opacity: 1; transform: scale(1.03); }
+        100% { opacity: 1; transform: scale(1); }
+    }
+    #xai-console .purchase-modal.gift {
+        max-width: 380px;
+        border: 1px solid transparent;
+        background:
+            linear-gradient(var(--panel), var(--panel)) padding-box,
+            linear-gradient(135deg, var(--gold), var(--pink)) border-box;
+        box-shadow: 0 20px 60px rgba(0,0,0,.5), 0 0 40px rgba(240,180,80,.15);
+        animation: xai-gift-in 380ms cubic-bezier(.2,.9,.3,1.2);
+    }
+    #xai-console .gift-icon {
+        width: 40px; height: 40px; margin: 0 auto 12px; display: block;
+        color: var(--gold);
+        filter: drop-shadow(0 4px 12px rgba(240,180,80,.4));
+    }
+    #xai-console .gift-title {
+        font-size: 20px;
+        background: linear-gradient(135deg, var(--gold), var(--pink));
+        -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    #xai-console .gift-message {
+        font-size: 13px; font-style: italic; color: var(--mut);
+        margin: 0 0 18px 0; padding: 10px 14px;
+        border-left: 2px solid var(--gold);
+        background: rgba(240,180,80,.06);
+        border-radius: 0 8px 8px 0;
+        text-align: left;
+    }
+    #xai-console .gift-ok { background: linear-gradient(135deg, var(--gold), var(--pink)); color: #1b1917; }
+
+    #xai-console .refer-bonus-line {
+        font-size: 13px; color: var(--ink-hi); margin: -2px 0 12px 0;
+        padding: 9px 12px; border-radius: 9px;
+        background: rgba(240,180,80,.08); border: 1px solid rgba(240,180,80,.3);
+    }
+    #xai-console .refer-bonus-line b { color: var(--gold); }
+
+    #xai-console .bill-row {
+        display: flex; align-items: center; justify-content: space-between; gap: 12px;
+        padding: 11px 0; border-bottom: 1px solid var(--line);
+    }
+    #xai-console .bill-row:last-child { border-bottom: none; }
+    #xai-console .bill-info { min-width: 0; }
+    #xai-console .bill-label { font-size: 13.5px; font-weight: 600; color: var(--ink-hi); }
+    #xai-console .bill-date { font-size: 11.5px; color: var(--mut); margin-top: 2px; }
+    #xai-console .bill-amt {
+        flex: 0 0 auto; text-align: right;
+        font-family: 'IBM Plex Mono', monospace; font-weight: 700; font-size: 14.5px; color: var(--ink-hi);
+    }
+    #xai-console .compare-table td { padding: 7px 8px; border-top: 1px solid var(--line); color: var(--ink); }
+    #xai-console .compare-table td:first-child { padding-left: 0; }
+    #xai-console .compare-table th:first-child { padding-left: 0; }
+    #xai-console .compare-table tr.current td { color: var(--violet); font-weight: 700; }
+    #xai-console .compare-table td.tier-un { color: var(--teal); }
+    #xai-console .bill-refund-badge {
+        display: block; margin-top: 3px; font-size: 10.5px; font-weight: 700;
+        color: #f38b7a; border: 1px solid rgba(240,90,60,.4); border-radius: 20px;
+        padding: 1px 8px; white-space: nowrap;
+    }
+
+    #xai-console .toast {
+        position: fixed;
+        left: 50%;
+        bottom: 24px;
+        transform: translateX(-50%);
+        background: #312c24;
+        border: 1px solid var(--line-2);
+        color: var(--ink);
+        padding: 11px 18px;
+        border-radius: 10px;
+        font-size: 13.5px;
+        box-shadow: 0 10px 34px rgba(0, 0, 0, 0.55);
+        z-index: 99999;
+        max-width: 90%;
+    }
+
+    #xai-console .wrap {
+        width: 100%;
+        max-width: 640px;
+        margin: 0 auto;
+        padding: 24px 16px;
+    }
+
+    /* One deliberate motion moment: the amount + headline number pulse when the tier, kind or
+       currency changes -- everything else stays quiet (hover states, toggle slide). */
+    @keyframes xaiPulse { 0%{ transform: scale(1); } 35%{ transform: scale(1.06); } 100%{ transform: scale(1); } }
+    #xai-console .x-pulse { animation: xaiPulse .32s cubic-bezier(.2,.8,.2,1); }
+
+    /* Tools panel */
+    #xai-console .tools-group { margin-bottom: 16px; }
+    #xai-console .tools-group:last-child { margin-bottom: 0; }
+    #xai-console .tools-group-label {
+        font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em;
+        color: var(--mut-2); margin-bottom: 8px;
+    }
+    #xai-console .tools-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    #xai-console .tool-chip {
+        background: var(--panel-2); border: 1px solid var(--line-2); border-radius: 10px;
+        padding: 9px 11px; transition: border-color .15s ease, transform .15s cubic-bezier(.2,.8,.2,1);
+    }
+    #xai-console .tool-chip:hover { border-color: var(--teal); transform: translateY(-1px); }
+    #xai-console .tool-chip b { display: block; font-size: 12.5px; color: var(--ink-hi); font-weight: 600; margin-bottom: 2px; }
+    #xai-console .tool-chip span { font-size: 11.5px; color: var(--mut); line-height: 1.4; }
+    @media (max-width: 480px) { #xai-console .tools-grid { grid-template-columns: 1fr; } }
+
+    @media (max-width: 560px) {
+        #xai-console .wrap { padding: 16px; }
+        #xai-console .amount .n { font-size: 48px; }
+        #xai-console .balance-grid { grid-template-columns: 1fr; }
+        #xai-console .con-header { flex-direction: column; align-items: stretch; }
+        #xai-console .toggle { min-width: unset; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+        #xai-console * { transition: none !important; }
+    }
+
+    #xai-console .waypoint-strip { margin: 14px 0 18px 0; }
+    #xai-console .waypoint-intro { font-size: 13px; color: var(--mut); line-height: 1.5; margin: 0 0 10px 0; }
+    #xai-console .waypoint-grid {
+        display: grid;
+        grid-template-columns: repeat(5, 1fr);
+        gap: 10px;
+    }
+    #xai-console .waypoint-card {
+        display: block;
+        background: var(--panel-2);
+        border: 1px solid var(--line-2);
+        border-radius: 11px;
+        padding: 12px;
+        text-decoration: none;
+        transition: border-color .15s ease, transform .15s ease;
+    }
+    #xai-console .waypoint-card:hover { border-color: var(--violet); transform: translateY(-1px); }
+    #xai-console .wp-icon { width: 18px; height: 18px; color: var(--violet); display: block; margin-bottom: 6px; }
+    #xai-console .waypoint-card b { display: block; font-size: 12.5px; color: var(--ink-hi); font-weight: 600; margin-bottom: 2px; }
+    #xai-console .waypoint-card span { font-size: 11px; color: var(--mut-2); }
+    #xai-console .waypoint-fallback { font-size: 11.5px; color: var(--mut-2); margin: 8px 0 0 0; }
+    #xai-console .waypoint-fallback a { color: var(--mut); }
+    /* Storefront hierarchy: lead with the plan name, keep price secondary. */
+    #xai-console .amount { margin-top: 8px; }
+    #xai-console .amount .plan-label { display:inline-block; font-size: 34px; line-height: 1.08; font-weight: 700; letter-spacing: -.02em; color: #a855f7; }
+    #xai-console .amount .reco-badge { margin-left: 8px; vertical-align: middle; }
+    #xai-console .tiername { margin-top: 5px; font-size: 15px; color: var(--mut-2); }
+    #xai-console .per { color: var(--mut-2); font-size: 13px; line-height: 1.2; }
+    #xai-console .per .cur, #xai-console .price-small { display:inline; font-size:15px; line-height:1; vertical-align:baseline; color:#a855f7; }
+    #xai-console #x-per-unit { color:var(--mut-2); font-size:13px; }
+    @media (max-width: 560px) {
+        #xai-console .waypoint-grid { grid-template-columns: 1fr 1fr; }
+    }
+</style>
+
+<div class="wrap">
+    <!-- header -->
+    <div class="header">
+        <div class="brand"><span class="dot"></span>Expert AI <small id="x-hello"></small><span class="tier-badge hidden" id="x-tier-badge"></span></div>
+        <a class="authbtn" id="x-authbtn" href="https://ssv.asia/#/portal/signin" target="_blank" rel="noopener">Sign in</a>
+    </div>
+    <div class="tagline">Your research co-pilot &#183; one account, every device</div>
+    <p class="usage-note hidden" id="x-welcome-back" style="margin:0 0 16px 0"></p>
+
+    <!-- Orientation strip: additive, sits above everything else so a new/confused visitor
+         immediately sees what this page is and where to go. Deliberately just anchor links to
+         sections already on this page (or the WhatsApp support line already used elsewhere) --
+         nothing new is invented here except the copy and the layout. -->
+    <div class="waypoint-strip">
+        <p class="waypoint-intro">This is your Expert AI account: see what you've used, top up or upgrade your plan, open the app, or get help. Everything below is one scroll away.</p>
+        <div class="waypoint-grid">
+            <a class="waypoint-card" href="expertai://">
+                <svg class="wp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><rect x="5" y="2" width="14" height="20" rx="2.5"></rect><line x1="10" y1="18" x2="14" y2="18"></line></svg>
+                <b>Open app</b>
+                <span>Launch the desktop or mobile app</span>
+            </a>
+            <a class="waypoint-card" href="#x-usage-anchor">
+                <svg class="wp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><line x1="5" y1="20" x2="19" y2="20"></line><rect x="7" y="11" width="3" height="9"></rect><rect x="13" y="6" width="3" height="14"></rect></svg>
+                <b>Check my usage</b>
+                <span>See your balance and history</span>
+            </a>
+            <a class="waypoint-card" href="#x-plan-sec">
+                <svg class="wp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v14"></path><path d="M6 11l6-6 6 6"></path></svg>
+                <b>Upgrade my plan</b>
+                <span>Pick the plan that fits you</span>
+            </a>
+            <a class="waypoint-card" href="#x-downloads-anchor">
+                <svg class="wp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M12 3v12"></path><path d="M6 11l6 6 6-6"></path><line x1="4" y1="20" x2="20" y2="20"></line></svg>
+                <b>Download apps</b>
+                <span>Android, desktop &amp; terminal</span>
+            </a>
+            <a class="waypoint-card" href="https://wa.me/919914499477?text=Hi%2C%20I%20need%20help%20with%20my%20Expert%20AI%20account&ref=ssv.asia" target="_blank" rel="noopener">
+                <svg class="wp-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6"><path d="M4 19V6a2 2 0 0 1 2-2h12a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H8l-4 4z"></path></svg>
+                <b>Get help</b>
+                <span>Real person, fast reply</span>
+            </a>
+        </div>
+        <p class="waypoint-fallback">Don't have the app yet? <a href="#x-downloads-anchor">Download it below</a>.</p>
+    </div>
+
+    <!-- purchase console -->
+    <div class="sec" id="x-plan-sec"><span class="tick">&#9656;</span><b>Choose a plan</b><span>use +/&#8722; to set your amount</span></div>
+    <div class="panel">
+        <div class="con-header">
+            <div class="toggle">
+                <button id="x-weekly" data-kind="weekly" aria-pressed="false">Weekly</button>
+                <button id="x-monthly" class="on" data-kind="monthly" aria-pressed="true">Monthly<span class="badge-small">3&#215; tokens</span></button>
+            </div>
+            <select class="cur-select" id="x-cur-select" aria-label="Display currency">
+                <option value="INR">&#8377; INR</option>
+                <option value="USD">$ USD</option>
+                <option value="EUR">&#8364; EUR</option>
+                <option value="GBP">&#163; GBP</option>
+                <option value="AED">AED</option>
+                <option value="SGD">S$ SGD</option>
+                <option value="AUD">A$ AUD</option>
+                <option value="CAD">C$ CAD</option>
+            </select>
+        </div>
+
+        <div class="tier-avatar-wrap" aria-live="polite">
+            <div class="tier-avatar-frame">
+                <img class="tier-avatar" id="x-avatar" width="192" height="192" alt="Expert AI Expert avatar">
+            </div>
+        </div>
+        <div class="amount">
+            <span class="plan-label" id="x-amt">Max</span><span class="reco-badge hidden" id="x-reco-badge">Most popular</span>
+            <div class="per" id="x-per"><span class="cur" id="x-cursym">&#8377;</span><span class="price-small mono" id="x-price">999</span> <span id="x-per-unit">per month</span></div>
+        </div>
+        <div class="tiername hidden"><span id="x-tier">Max</span></div>
+
+        <div class="stepper">
+            <button class="step-btn" id="x-dec" aria-label="Lower tier" type="button">&#8722;</button>
+            <div class="step-track"><div class="step-fill" id="x-fill"></div></div>
+            <button class="step-btn" id="x-inc" aria-label="Higher tier" type="button">+</button>
+        </div>
+        <div class="apps-line" id="x-tier-apps" style="margin-bottom:20px"></div>
+
+        <div class="breakdown">
+            <div class="prow headline">
+                <span class="logo" style="color: #a855f7; font-size: 19px;">&#8734;</span>
+                <span class="pinfo"><b>Expert AI <span class="unlimited-badge hidden" id="x-unlimited-badge">Continuous access</span></b><em>Fine-tuned LLMs &#183; free-router fallbacks</em></span>
+                <span class="ptok mono" id="x-b-expert">4.83M</span>
+            </div>
+            <div class="prow" id="x-row-luna">
+                <span class="logo"><img src="https://upload.wikimedia.org/wikipedia/commons/6/66/OpenAI_logo_2025_%28symbol%29.svg" alt="ChatGPT"></span>
+                <span class="pinfo"><b>ChatGPT</b><em>Luna &#183; always available</em></span>
+                <span class="ptok mono" id="x-b-luna">4.05M</span>
+            </div>
+            <div class="prow" id="x-row-haiku">
+                <span class="logo"><img src="https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg" alt="Claude"></span>
+                <span class="pinfo"><b>Claude</b><em>Haiku 4.5 &#183; everyday default</em></span>
+                <span class="ptok mono" id="x-b-haiku">1.30M</span>
+            </div>
+            <div class="prow" id="x-row-sonnet">
+                <span class="logo"><img src="https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg" alt="Claude"></span>
+                <span class="pinfo"><b>Claude</b><em>Sonnet 5.5 &#183; hard tasks or "review"</em></span>
+                <span class="ptok mono" id="x-b-sonnet">186K</span>
+            </div>
+            <div class="brow total">
+                <span>Total access</span>
+                <span class="mono" id="x-b-total">6M+</span>
+            </div>
+            <p class="usage-note" style="margin:6px 0 0">Your plan includes the models shown above plus Expert AI fine-tuned LLMs and automatic free-router fallback.</p>
+        </div>
+
+        <button class="buy" id="x-subscribe" type="button"><span id="x-subscribe-label">Subscribe &amp; auto-renew:</span> <span id="x-buyamt">&#8377;860</span></button>
+        <button class="authbtn" id="x-buy" type="button" style="width:100%;margin-top:8px">Buy once instead (no auto-renew)</button>
+        <div class="fineprint" id="x-weekly-note" style="display:none">7-day pass: 1/3 the tokens of Monthly, renews only when you buy again.</div>
+        <div class="fineprint" id="x-fineprint">Haiku runs everyday chat; Sonnet steps in on hard tasks or when you say "review".</div>
+        <div class="fineprint" style="margin-top:4px">Subscribe sets up real autopay (Razorpay UPI/card mandate), charged automatically each cycle until cancelled. "Buy once" is a single manual charge with no auto-renewal.</div>
+        <div class="payline">Razorpay &#183; UPI &#183; Cards &#183; Netbanking &#183; charged in &#8377; INR</div>
+    </div>
+
+    <!-- signed out state -->
+    <div id="x-signedout">
+        <!-- Pre-login funnel: presentation only -- the actual sign-in/signup/manual-email flow
+             below is completely untouched. This just gives a new visitor something to read and
+             understand (what Expert AI is, the model blend, what plans cost) before they're asked
+             to type an email, instead of dropping them straight on a bare sign-in box. -->
+        <div class="panel" id="x-pre-funnel" style="margin-bottom:16px">
+            <p class="plain-tag" style="font-size:15px;margin-bottom:6px">One account, three AI engines, one balance</p>
+            <p class="mcp-copy" style="margin-bottom:16px">Expert AI blends three models behind a single token balance, so you always reach for the right tool without juggling separate subscriptions or bills.</p>
+            <div class="tools-grid" style="margin-bottom:16px">
+                <div class="tool-chip"><b>Claude Haiku 4.5</b><span>Fast, everyday default &#8212; most day-to-day questions land here.</span></div>
+                <div class="tool-chip"><b>Claude Sonnet 5.5</b><span>Steps in for hard tasks, deep research or coding &#8212; or just say &#8220;review&#8221;.</span></div>
+                <div class="tool-chip"><b>ChatGPT (Luna)</b><span>Always available for creative writing and general chat.</span></div>
+                <div class="tool-chip"><b>Expert AI engine</b><span>Fine-tuned LLMs &#183; free-router fallbacks on every plan &#8212; running out of balance never means a hard wall.</span></div>
+            </div>
+            <p class="mcp-copy" style="margin-bottom:0">Plans start at <b id="x-pre-price-from" style="color:var(--ink-hi)">&#8377;299</b>/month, and every plan includes continuous Expert AI fallback. <span class="hidden" id="x-pre-price-unlimited">&#8377;299</span> <button class="mini-link" id="x-pre-compare-toggle" type="button" style="padding:0;text-decoration:underline">Compare 4 plans</button></p>
+            <div class="hidden" id="x-pre-compare-wrap" style="margin-top:12px;overflow-x:auto">
+                <table class="mono compare-table" id="x-pre-compare-table" style="width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap">
+                    <thead><tr style="text-align:left;color:var(--mut)">
+                        <th style="padding:6px 8px 6px 0;font-weight:600">Plan</th>
+                        <th style="padding:6px 8px;font-weight:600">Price</th>
+                        <th style="padding:6px 8px;font-weight:600">Haiku</th>
+                        <th style="padding:6px 8px;font-weight:600">Sonnet</th>
+                        <th style="padding:6px 8px;font-weight:600">Luna</th>
+                        <th style="padding:6px 8px;font-weight:600">Total</th>
+                        <th style="padding:6px 0 6px 8px;font-weight:600">Unlimited</th>
+                    </tr></thead>
+                    <tbody id="x-pre-compare-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+        <div class="panel signin">
+            <p id="x-signedout-msg">Sign in to access your balance across Android, desktop, and terminal: one quota, three surfaces.</p>
+            <div class="signin-actions">
+                <a class="authbtn primary" href="https://ssv.asia/#/portal/signin" target="_blank" rel="noopener">Sign in</a>
+                <a class="authbtn" href="https://ssv.asia/#/portal/signup" target="_blank" rel="noopener">Create account</a>
+            </div>
+            <div class="signin-alt">or</div>
+            <a class="authbtn" id="x-google-signin" href="https://api.ssv.asia/auth/google/start?ref=ssv.asia" style="width:100%;text-align:center;display:flex;align-items:center;justify-content:center;gap:8px">
+                <svg width="16" height="16" viewBox="0 0 48 48" style="flex:0 0 auto"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.1 0-11-4.9-11-11s4.9-11 11-11c2.8 0 5.3 1 7.3 2.7l6-6C33.6 6.5 29.1 4.5 24 4.5 13.2 4.5 4.5 13.2 4.5 24S13.2 43.5 24 43.5 43.5 34.8 43.5 24c0-1.2-.1-2.4-.4-3.5z"></path><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 15.9 18.9 13 24 13c2.8 0 5.3 1 7.3 2.7l6-6C33.6 6.5 29.1 4.5 24 4.5c-7.7 0-14.3 4.4-17.7 10.2z"></path><path fill="#4CAF50" d="M24 43.5c5 0 9.5-1.9 12.9-5.1l-6.3-5.3C28.7 34.5 26.5 35 24 35c-5.3 0-9.7-3.6-11.3-8.4l-6.5 5C9.6 39 16.3 43.5 24 43.5z"></path><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4.1 5.5l6.3 5.3C40.9 36.4 43.5 30.7 43.5 24c0-1.2-.1-2.4-.4-3.5z"></path></svg>
+                Continue with Google
+            </a>
+            <div class="field">
+                <input type="email" id="x-email" placeholder="you@email.com" autocomplete="email" inputmode="email">
+                <button class="solid" id="x-send">Continue</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- signed in to ssv.asia, but the gateway has no account for this email yet -->
+    <div id="x-activation" class="hidden">
+        <div class="panel signin">
+            <p id="x-activation-msg">Setting up your Expert AI account&#8230;</p>
+            <div class="signin-actions">
+                <button class="authbtn primary" id="x-retry" type="button">Try again</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- signed in state -->
+    <div id="x-signedin" class="hidden">
+        <div class="sec" id="x-usage-anchor"><span class="tick">&#9656;</span><b>Your balance</b><span id="x-planexp"></span><button class="mini-link" id="x-refresh" type="button" title="Refresh balance">&#8635;</button><button class="mini-link" id="x-signout-all" type="button" title="Sign out of every device">Sign out everywhere</button><button class="mini-link" id="x-signout" type="button">Sign out</button></div>
+        <div class="panel">
+            <div class="bal-tabs">
+                <button class="bal-tab on" id="x-tab-balance" type="button" data-tab="balance">Balance</button>
+                <button class="bal-tab" id="x-tab-usage" type="button" data-tab="usage">Usage</button>
+            </div>
+            <div id="x-view-balance">
+                <div class="balance-grid">
+                    <div class="balance-item">
+                        <span class="plain-tag">Unlimited assistant</span>
+                        <span class="label">&#8734; Expert AI</span>
+                        <span class="amt" id="x-engine-amt">&#8212;</span>
+                        <span class="sub" id="x-engine-sub">fine-tuned LLMs &#183; tools &#183; web &#183; vault</span>
+                    </div>
+                    <div class="balance-item">
+                        <span class="plain-tag">Creative &amp; general chat</span>
+                        <span class="label"><img class="brand-icon" width="14" height="14" src="https://upload.wikimedia.org/wikipedia/commons/6/66/OpenAI_logo_2025_%28symbol%29.svg" alt=""> ChatGPT</span>
+                        <span class="amt" id="x-luna-r">&#8212;</span>
+                        <span class="sub">of <span id="x-luna-t">&#8212;</span></span>
+                    </div>
+                    <div class="balance-item">
+                        <span class="plain-tag">Fast everyday answers</span>
+                        <span class="label"><img class="brand-icon" width="14" height="14" src="https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg" alt=""> Haiku 4.5</span>
+                        <span class="amt" id="x-haiku-r">&#8212;</span>
+                        <span class="sub">of <span id="x-haiku-t">&#8212;</span></span>
+                    </div>
+                    <div class="balance-item">
+                        <span class="plain-tag">Deep research &amp; coding</span>
+                        <span class="label"><img class="brand-icon" width="14" height="14" src="https://upload.wikimedia.org/wikipedia/commons/b/b0/Claude_AI_symbol.svg" alt=""> Sonnet 5</span>
+                        <span class="amt" id="x-sonnet-r">&#8212;</span>
+                        <span class="sub">of <span id="x-sonnet-t">&#8212;</span></span>
+                    </div>
+                </div>
+            </div>
+            <div id="x-view-usage" class="hidden">
+                <div class="hidden" id="x-total-usage-wrap" style="text-align:center;margin:0 0 16px 0;padding:14px 10px;border:1px solid rgba(168,85,247,.35);border-radius:14px;background:rgba(168,85,247,.06)">
+                    <div class="usage-note" style="margin:0 0 2px 0">Total usage &#183; all models, all time</div>
+                    <div id="x-total-usage" style="font-family:'IBM Plex Mono',monospace;font-weight:700;font-size:28px;color:var(--violet);text-shadow:0 0 20px rgba(168,85,247,.35)">&#8212;</div>
+                </div>
+                <p class="usage-note" style="margin-top:0">This cycle</p>
+                <div class="usage-row" id="x-usage-haiku"></div>
+                <div class="usage-row" id="x-usage-sonnet"></div>
+                <div class="usage-row" id="x-usage-luna"></div>
+                <p class="usage-note hidden" id="x-spend-forecast" style="margin:2px 0 0"></p>
+                <p class="usage-note" id="x-lifetime-head">Since Sept 13, 2026</p>
+                <div class="usage-row" id="x-lifetime-haiku"></div>
+                <div class="usage-row" id="x-lifetime-sonnet"></div>
+                <div class="usage-row" id="x-lifetime-luna"></div>
+                <div class="usage-row" id="x-lifetime-free"></div>
+                <p class="noplan-msg hidden" id="x-gift-lifetime-line"></p>
+            </div>
+            <div class="plan-info">
+                <span>Plan &#183; <b id="x-planname">&#8212;</b> &#183; <button class="mini-link" id="x-compare-toggle" type="button" style="padding:0;text-decoration:underline">Compare all plans</button></span>
+                <span class="badge" id="x-nrl-badge">Never rate-limited</span>
+            </div>
+            <div class="hidden" id="x-compare-wrap" style="margin-top:14px;overflow-x:auto">
+                <table class="mono compare-table" id="x-compare-table" style="width:100%;border-collapse:collapse;font-size:11.5px;white-space:nowrap">
+                    <thead><tr style="text-align:left;color:var(--mut)">
+                        <th style="padding:6px 8px 6px 0;font-weight:600">Plan</th>
+                        <th style="padding:6px 8px;font-weight:600">Price</th>
+                        <th style="padding:6px 8px;font-weight:600">Haiku</th>
+                        <th style="padding:6px 8px;font-weight:600">Sonnet</th>
+                        <th style="padding:6px 8px;font-weight:600">Luna</th>
+                        <th style="padding:6px 8px;font-weight:600">Total</th>
+                        <th style="padding:6px 0 6px 8px;font-weight:600">Unlimited</th>
+                    </tr></thead>
+                    <tbody id="x-compare-tbody"></tbody>
+                </table>
+            </div>
+            <div class="apps-line hidden" id="x-my-apps"></div>
+            <p class="renew-line hidden" id="x-sub-line"></p>
+            <p class="renew-line warn hidden" id="x-sub-stuck-line"></p>
+            <button class="authbtn hidden" id="x-sub-cancel" type="button" style="width:100%;margin-top:8px">Cancel subscription</button>
+            <p class="renew-line hidden" id="x-renew-line"></p>
+            <p class="noplan-msg hidden" id="x-noplan-msg">No active plan yet. Pick one below to start using Haiku, Sonnet and ChatGPT with a real token balance.</p>
+            <p class="noplan-msg hidden" id="x-legacy-line"></p>
+        </div>
+
+        <div class="sec"><span class="tick">&#9656;</span><b>Memory</b><span>stays with every chat</span></div>
+        <div class="panel">
+            <textarea class="mem-box" id="x-mem-text" maxlength="4000" placeholder="Anything worth Expert AI remembering about you or your work: it's injected into every chat automatically."></textarea>
+            <p class="usage-note" style="margin:0 0 8px 0">Do not submit malicious code, scripts, or attempts to manipulate the system. Submissions may be logged and reported to the relevant authorities.</p>
+            <div class="mem-count" id="x-mem-count">0 / 4000</div>
+            <div class="mem-row">
+                <span class="mem-status" id="x-mem-status"></span>
+                <button class="authbtn primary" id="x-mem-save" type="button" style="padding:8px 16px">Save</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MCP: AEC knowledge-base connector -- visible signed-out too, as a preview/teaser, so a
+         visitor knows what they get before creating an account. Only the actual activate/dash/buy
+         flows (which need a gateway session) stay gated. -->
+    <div class="sec" id="x-mcp-sec"><span class="tick">&#9656;</span><b>AEC vault connector</b><span><a href="https://ssv.asia/mcp/" target="_blank" rel="noopener">Open full page &#8599;</a></span></div>
+    <div class="panel" id="x-mcp-panel">
+        <div id="x-mcp-preview">
+            <p class="mcp-copy">A private connector link for the AEC knowledge base: ~500 folders of building codes &amp; standards, cited to source. <b>10 free searches a day</b>, no card needed.</p>
+            <div class="urlbox" aria-hidden="true">
+                <input value="https://ssv.asia/mcp/u/••••••••••••••••" readonly tabindex="-1">
+                <button type="button" disabled style="opacity:.5">Copy</button>
+            </div>
+            <ol class="mcp-steps">
+                <li>Open Claude &#8594; <b>Settings &#8594; Connectors &#8594; Add custom connector</b>.</li>
+                <li>Paste your private URL and save.</li>
+                <li>Ask about any building code or standard, or start with <b>&quot;aec &#8230;&quot;</b>.</li>
+            </ol>
+            <a class="authbtn primary" href="https://ssv.asia/#/portal/signin" target="_blank" rel="noopener" style="width:100%;margin-top:10px;text-align:center;display:block">Sign in to get your URL</a>
+        </div>
+        <div class="hidden" id="x-mcp-activate">
+            <p class="mcp-copy">Get a private connector link for the AEC knowledge base: <b>10 free searches a day</b>, cited to source, no card needed.</p>
+            <button class="buy" id="x-mcp-create" type="button">Create your MCP URL</button>
+            <div class="mcp-msg" id="x-mcp-amsg"></div>
+        </div>
+        <div class="hidden" id="x-mcp-dash">
+            <div class="balance-grid">
+                <div class="balance-item">
+                    <span class="label">Free today</span>
+                    <span class="amt" id="x-mcp-free">&#8212;</span>
+                    <span class="sub">of <span id="x-mcp-freetotal">10</span></span>
+                </div>
+                <div class="balance-item">
+                    <span class="label">Prepaid credits</span>
+                    <span class="amt" id="x-mcp-credits">&#8212;</span>
+                    <span class="sub">&#8377;1 = 1 query</span>
+                </div>
+            </div>
+            <div class="urlbox">
+                <input id="x-mcp-url" readonly>
+                <button id="x-mcp-copy" type="button">Copy</button>
+            </div>
+            <ol class="mcp-steps">
+                <li>Open Claude &#8594; <b>Settings &#8594; Connectors &#8594; Add custom connector</b>.</li>
+                <li>Paste the URL above and save.</li>
+                <li>Ask about any building code or standard, or start with <b>&quot;aec &#8230;&quot;</b>.</li>
+            </ol>
+            <button class="authbtn" id="x-mcp-topup-btn" type="button" style="width:100%;margin-top:10px">+ Top up credits</button>
+            <p class="mcp-fine">Keep this URL private: it's your key.</p>
+        </div>
+        <div class="hidden" id="x-mcp-buy">
+            <div class="presets" id="x-mcp-presets">
+                <button data-rs="50" type="button">&#8377;50</button>
+                <button data-rs="200" class="on" type="button">&#8377;200</button>
+                <button data-rs="500" type="button">&#8377;500</button>
+                <button data-rs="1000" type="button">&#8377;1000</button>
+            </div>
+            <div class="field" style="margin-top:10px">
+                <input type="number" id="x-mcp-amt" min="50" max="10000" step="1" value="200" inputmode="numeric" aria-label="Amount in rupees">
+                <button class="solid" id="x-mcp-pay" type="button">Pay with Razorpay</button>
+            </div>
+            <div class="mcp-msg" id="x-mcp-msg"></div>
+        </div>
+    </div>
+
+    <!-- billing history: hidden until we actually have a signed-in session to fetch it for. -->
+    <div class="sec hidden" id="x-billing-sec"><span class="tick">&#9656;</span><b>Billing history</b><span>last 20</span></div>
+    <div class="panel hidden" id="x-billing-panel">
+        <div id="x-billing-list"><p class="usage-note" style="margin:0">Loading&#8230;</p></div>
+    </div>
+
+    <!-- refer & earn: only meaningful once we know who's signed in (the link is keyed to their
+         own email), so this whole section stays hidden until then. -->
+    <div class="sec hidden" id="x-refer-sec"><span class="tick">&#9656;</span><b>Refer &amp; earn</b><span>for both of you</span></div>
+    <div class="panel hidden" id="x-refer-panel">
+        <p class="mcp-copy">Share your link. When someone signs up with it for the first time, you <b>and</b> they each get a one-time bonus added to your balance.</p>
+        <p class="refer-bonus-line" id="x-refer-bonus"></p>
+        <div class="urlbox">
+            <input id="x-refer-url" readonly>
+            <button id="x-refer-copy" type="button">Copy</button>
+        </div>
+    </div>
+
+    <!-- downloads -->
+    <div class="sec" id="x-downloads-anchor"><span class="tick">&#9656;</span><b>Downloads</b><span>by tier</span></div>
+    <div class="panel"><div class="dl-grid" id="x-downloads"></div></div>
+
+    <!-- built-in tools (read-only reference, kept at the bottom -- everything above this line is
+         clickable/interactive; this and the footer are the only purely informational sections) -->
+    <div class="sec"><span class="tick">&#9656;</span><b>Built into every account</b><span>no extra cost</span></div>
+    <div class="panel">
+        <p class="usage-note" style="margin-top:0">A tool call adds only a few hundred tokens to a message, not a separate charge on top of it. On the &#8776;&#8377;860 Expert tier's roughly 1M paid tokens (before its own unlimited fallback kicks in), that's easily 1,500 to 2,000 ordinary chats, each free to reach for a calculator, weather check, or web search along the way.</p>
+        <div id="x-tools-panel"></div>
+    </div>
+
+    <!-- footer -->
+    <div class="foot">
+        <div style="color: #6f665a; font-size: 11px; margin-bottom: 4px;">Built in Chandigarh</div>
+        <a href="https://ssv.asia/#/portal/" target="_blank" rel="noopener">My account</a> &#183;
+        <a href="https://ssv.asia/" target="_blank" rel="noopener">ssv.asia</a> &#183;
+        <a href="https://ssv.asia/terms-and-conditions/" target="_blank" rel="noopener">Terms</a> &#183;
+        <a href="https://ssv.asia/privacy-policy/" target="_blank" rel="noopener">Privacy</a> &#183;
+        <a href="https://wa.me/919914499477?text=Hi%2C%20I%20need%20help%20with%20Expert%20AI&ref=ssv.asia" target="_blank" rel="noopener">Support</a> &#183;
+        <a href="https://ssv.asia/account-deletion/" target="_blank" rel="noopener">Delete my account</a>
+    </div>
+</div>
+</div>
+
+<script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+<script>
+    (function(){
+        "use strict";
+
+        var PORTAL = {
+            signin: "https://ssv.asia/#/portal/signin",
+            signup: "https://ssv.asia/#/portal/signup",
+            account: "https://ssv.asia/#/portal/"
+        };
+
+        var CONFIG = {
+            gateway: "https://api.ssv.asia",
+            // Display-only FX conversion, same pattern as the pre-existing USD toggle: every
+            // Razorpay charge this gateway creates is hardcoded to currency:"INR" (verified
+            // directly in createRazorpayLink/createRazorpaySubscription/handlePayOrder -- there
+            // is no multi-currency charging capability server-side). These let a visitor see an
+            // approximate price in their own currency; the payline fineprint keeps disclosing
+            // that the actual charge is always INR. Rates are approximate spot rates (2026-09-13,
+            // mid-market) -- not live-updating, will drift over time same as the old usdRate:84
+            // already had (that was stale; corrected here to ~95.5).
+            // Razorpay itself only settles in INR for this account type -- the 100-currency claim
+            // on razorpay.com is for their separate India/Malaysia/Singapore/US international-
+            // payments product, a different integration this gateway doesn't use. Currencies below
+            // are chosen for relevance to ssv.asia's likely audience (India plus major AI/SaaS
+            // markets: US, Eurozone, UK, UAE, Singapore, Australia, Canada), not because Razorpay
+            // "supports" charging in them here.
+            currencies: {
+              INR: { symbol: "\u20b9", rate: 1 },
+              USD: { symbol: "$", rate: 95.5 },
+              EUR: { symbol: "\u20ac", rate: 110.8 },
+              GBP: { symbol: "\u00a3", rate: 129.2 },
+              AED: { symbol: "AED ", rate: 26.0 },
+              SGD: { symbol: "S$", rate: 75.4 },
+              AUD: { symbol: "A$", rate: 68.6 },
+              CAD: { symbol: "C$", rate: 68.9 }
+            },
+            // Verified 2026-09-11 against the LIVE deployed gateway (Cloudflare Worker
+            // "expert-ai-gateway", pulled via the Cloudflare MCP) -- TIER_LADDER haiku/sonnet/luna
+            // match exactly, tierGrant()'s weekly formula (price/3, tokens/3) matches exactly.
+            // `headline` is "pricing ladder final.md" section 3's published "Expert AI Total"
+            // figure: at least 2x the paid Haiku+Sonnet+Luna sum, rounded up to a clean number --
+            // verified NOT a marketing exaggeration by reading precheckExpertAI() in the live
+            // source directly: its free/nitro_fast cascade leaf sets remaining=Infinity with no
+            // budget check at all, so uncapped free-tier capacity genuinely exists for any
+            // tier-ladder holder at $0 marginal cost. These are the doc's exact published numbers,
+            // not independently re-derived by this file.
+            tiers: [
+              {label:"Essential",price:299,haiku:100000,sonnet:0,luna:800000,unlimited:true,headline:6000000,gatewayTier:11,avatar:"00-starter",avatarExt:"-256-3.webp",usageLabel:"6M+ usage"},
+              {label:"Pro",price:599,haiku:400000,sonnet:0,luna:1000000,unlimited:true,headline:12000000,gatewayTier:12,avatar:"02-professional",avatarExt:"-256-3.webp",usageLabel:"12M+ usage"},
+              {label:"Max",price:999,haiku:50000,sonnet:300000,luna:1800000,unlimited:true,headline:20000000,gatewayTier:13,avatar:"04-expert",avatarExt:"-256-3.webp",usageLabel:"20M+ usage"},
+              {label:"Founder",price:1999,haiku:50000,sonnet:650000,luna:4000000,unlimited:true,headline:40000000,gatewayTier:14,avatar:"10-foundational-enterprise",avatarExt:"-256-4.webp",usageLabel:"40M+ usage"}
+            ],
+            // Tier-avatar progression (FRONTEND-HANDOFF-TIER-AVATARS.md, 2026-09-12) -- same owl
+            // character across all 11 states, each tier adding a capability signal. Uploaded to
+            // Ghost's own image store so they're same-origin/CDN-cached, not hotlinked elsewhere.
+            recommendedTier: 2, // Max -- the recommended balance of advanced models and value
+            avatarBase: "https://ssv.asia/content/images/2026/09/",
+            avatarExt: "-256.webp",
+            // Gateway-confirmed REFERRAL_BONUS values (2026-09-13) -- one clearly-labeled place,
+            // so if the gateway's own bonus amount ever changes, this is the one line to update
+            // rather than hunting for a hardcoded number buried in the refer-panel copy.
+            REFERRAL_BONUS: { haiku: 20000, sonnet: 2000, luna: 15000 },
+            // Per-tier vertical nudge (px) on top of the fixed avatar frame, tuned against the
+            // final designer-aligned art (2026-09-12) -- only translateY differs per tier, the
+            // frame itself is identical for all 11 (per FRONTEND-HANDOFF-TIER-AVATARS.md).
+            avatarAdjustments: {
+              "00-starter": 0, "01-starter-plus": 0, "02-professional": 0, "03-professional-plus": 0,
+              "04-expert": 0, "05-expert-plus": 0, "06-growth": 0, "07-growth-plus": 0,
+              "08-foundation": 0, "09-foundation-plus": 0, "10-foundational-enterprise": 0
+            },
+            weeklyMultiplier: 1/3,
+            // Product catalog, from "pricing ladder final.md" section 9 -- exact names, real
+            // one-line descriptions (not invented copy), and the doc's own download links. Keyed
+            // by the same app codes the gateway's /me returns (see APP_NAMES below).
+            // Verified 2026-09-12 by fetching the LIVE /install/ and /pricing/ Ghost pages
+            // directly (not assumed) -- /install/ only actually lists Expert AI Terminal (CLI)
+            // downloads for Windows/macOS; there is zero mention of Expert AI Agent or Expert OS
+            // anywhere on either page, despite an earlier doc claiming both were "listed on
+            // /install/". That claim was false -- corrected here to available:false rather than
+            // pointing every download button at the same CLI/install page, which is what was
+            // silently happening before this fix.
+            // Verified 2026-09-13 DIRECTLY against the GitHub Releases API for
+            // expert-terminal/expert-ai-downloads (the repo was renamed from
+            // "expert-ai-terminal-downloads" -- old links 301-redirect here, this is the
+            // canonical name). Every URL below is a real asset from a real tagged release,
+            // fetched via `gh`/curl, not guessed: Expert AI Agent ("Tray Agent" in the repo's own
+            // release names) and Expert OS both turned out to have real installers already
+            // published -- the earlier "not yet publicly available" was wrong, just not looking
+            // in this (renamed) repo.
+            PRODUCTS: {
+              "android": { name: "Expert AI", desc: "Android phone app.", available: true,
+                url: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-ai-mobile-v1.0/expert-ai-agent.apk" },
+              "cli": { name: "Expert AI Terminal", desc: "Command-line agent.", available: true,
+                url: "https://github.com/expert-terminal/expert-ai-downloads/releases/latest",
+                win: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/v0.2.2/ExpertAI-Setup-windows-x64.exe",
+                macArm: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/v0.2.2/ExpertAI-Setup-macos-apple-silicon.pkg",
+                macIntel: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/v0.2.2/ExpertAI-Setup-macos-intel.pkg" },
+              "expert-ai-agent": { name: "Expert AI Agent", desc: "Windows/macOS desktop tray companion app.", available: true,
+                url: "https://github.com/expert-terminal/expert-ai-downloads/releases/tag/expert-ai-tray-v0.1.0",
+                win: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-ai-tray-v0.1.0/Expert.AI.Agent-0.1.0-x64.exe",
+                macArm: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-ai-tray-v0.1.0/Expert.AI.Agent-0.1.0-arm64.dmg",
+                macIntel: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-ai-tray-v0.1.0/Expert.AI.Agent-0.1.0-x64.dmg" },
+              "expert-os": { name: "Expert OS", desc: "Full desktop research workspace.", available: true,
+                url: "https://github.com/expert-terminal/expert-ai-downloads/releases/tag/expert-os-v0.1.6",
+                win: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-os-v0.1.6/Expert.OS-Setup-0.1.6.exe",
+                macArm: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-os-v0.1.6/Expert-OS-0.1.6-arm64.dmg",
+                macIntel: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-os-v0.1.6/Expert-OS-0.1.6-x64.dmg",
+                linux: "https://github.com/expert-terminal/expert-ai-downloads/releases/download/expert-os-v0.1.6/Expert-OS-0.1.6-x86_64.AppImage" },
+              // CORRECTED 2026-09-12: the gateway-managed CLI Pro variant does NOT bypass the
+              // gateway -- models are still routed and metered through it, customization/pricing
+              // is discussed directly, not self-serve BYOK. The version that genuinely bypasses
+              // the gateway (real BYOK, your own provider key, zero gateway involvement) is the
+              // separate physical USB edition below -- a one-time purchase, not part of any
+              // subscription tier. Still no separate binary for the CLI Pro variant (confirmed:
+              // no "pro" tag exists in the repo) -- it's unlocked access, not a distinct download.
+              "pro": { name: "Expert AI Terminal Pro", desc: "Advanced frontier research harness \u2014 our most capable agentic setup, models managed by the gateway. Customization and pricing available on request.", available: false,
+                url: "https://github.com/expert-terminal/expert-ai-downloads/releases/latest" },
+              // One-time physical purchase, NOT gated by any subscription tier -- the only
+              // one-time software/hardware license purchasable from this page. Genuinely bypasses
+              // the gateway (BYOK, runs fully offline against the buyer's own provider key).
+              "pro-usb": { name: "Expert AI Terminal \u2014 Air-Gapped Digital Brain", desc: "A physical USB drive we hand-deliver, pre-loaded with the real BYOK CLI variant \u2014 this is the one that genuinely bypasses the gateway entirely, using your own provider key.", available: true,
+                oneTime: true, url: "https://corbu.gumroad.com/l/ai" }
+            },
+            // App gating per tier, from the live gateway's TIER_LADDER `apps` field -- cumulative,
+            // each tier includes everything the ones before it unlocked.
+            appsByTier: [
+              ["android"],
+              ["android", "cli", "expert-ai-agent"],
+              ["android", "cli", "expert-ai-agent", "expert-os"],
+              ["android", "cli", "expert-ai-agent", "expert-os", "terminal-pro"]
+            ],
+            // Built-in tools every paid account's chat requests can reach, from "pricing ladder
+            // final.md" section 10 -- real tool names and what each does, grouped as the doc
+            // groups them (always-on / keyword-gated / AEC vault / standing features). Not
+            // tier-gated -- available to any signed-in tier-ladder holder regardless of which
+            // plan they're on.
+            TOOLS: [
+              { group: "Always on", items: [
+                { name: "Web search", desc: "Live web search on every request (Tavily)." }
+              ]},
+              { group: "Brought in when a message needs them", items: [
+                { name: "Calculator", desc: "Arithmetic and unit math, solved inline." },
+                { name: "Currency convert", desc: "Real-time exchange rates." },
+                { name: "Weather", desc: "Live conditions and forecasts." },
+                { name: "Timezone convert", desc: "Convert times across timezones." },
+                { name: "Unit convert", desc: "Convert between measurement units." },
+                { name: "Wikipedia lookup", desc: "Quick encyclopedia answers." },
+                { name: "Dictionary lookup", desc: "Word definitions." },
+                { name: "News headlines", desc: "Latest headlines on a topic." },
+                { name: "arXiv search", desc: "Search academic papers." },
+                { name: "Public holidays", desc: "Holiday calendars by country." },
+                { name: "QR code generator", desc: "Generate a QR code instantly." },
+                { name: "GitHub search", desc: "Search repos and code." },
+                { name: "Text statistics", desc: "Word count, readability, text stats." },
+                { name: "Citation lookup", desc: "Format citations." }
+              ]},
+              { group: "AEC knowledge base", items: [
+                { name: "AEC search", desc: "~500 folders of building codes & standards \u2014 10 free lookups a day, then 1 credit each." },
+                { name: "AEC folders", desc: "Browse the folder tree, free." },
+                { name: "AEC balance", desc: "Check your credit balance, free." }
+              ]},
+              { group: "Standing features", items: [
+                { name: "Memory", desc: "A note up to 4,000 characters, injected into every chat automatically." },
+                { name: "MCP connector", desc: "Connect Claude Desktop or any MCP client straight to the AEC vault." }
+              ]}
+            ]
+        };
+        var STEP_MIN = 0, STEP_MAX = CONFIG.tiers.length - 1;
+
+        var root = document.getElementById("xai-console");
+        var $ = function(id){ return root.querySelector("#" + id); };
+
+        var store = {
+            get: function(k){ try { return localStorage.getItem(k); } catch(e){ return null; } },
+            set: function(k,v){ try { localStorage.setItem(k,v); } catch(e){} },
+            del: function(k){ try { localStorage.removeItem(k); } catch(e){} }
+        };
+
+        // Restored from localStorage (same `store` helper used for session_token) so a full page
+        // reload -- e.g. the "Buy once" redirect to Razorpay's hosted checkout and back -- doesn't
+        // silently reset a visitor's currency/kind/tier choice back to defaults.
+        var kind = store.get("xai_kind") || "monthly";
+        if (kind !== "monthly" && kind !== "weekly") kind = "monthly";
+        // Max is the storefront starting point on every fresh load; the stepper still changes tiers.
+        var step = 2;
+        function inferCurrency(){
+            // Permission-free approximation: browser language and timezone only. It never asks
+            // for GPS/location access, and a visitor can still override it with the currency menu.
+            var lang = (navigator.language || "").toLowerCase();
+            var zone = "";
+            try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+            if (lang.indexOf("en-us") === 0 || /new_york|los_angeles|chicago|denver|phoenix|honolulu/i.test(zone)) return "USD";
+            if (lang.indexOf("en-gb") === 0 || /london/i.test(zone)) return "GBP";
+            if (lang.indexOf("en-au") === 0 || /sydney|melbourne|perth/i.test(zone)) return "AUD";
+            if (lang.indexOf("en-ca") === 0 || /toronto|vancouver/i.test(zone)) return "CAD";
+            if (lang.indexOf("ar-ae") === 0 || /dubai|abu_dhabi/i.test(zone)) return "AED";
+            if (lang.indexOf("en-sg") === 0 || /singapore/i.test(zone)) return "SGD";
+            if (lang.indexOf("de-") === 0 || lang.indexOf("fr-") === 0 || lang.indexOf("es-") === 0 || lang.indexOf("it-") === 0 || lang.indexOf("nl-") === 0 || /europe\//i.test(zone)) return "EUR";
+            return "INR";
+        }
+        var cur = store.get("xai_cur") || inferCurrency();
+
+        // Preload every tier avatar up front so stepping through the slider swaps instantly --
+        // no per-step network wait, per FRONTEND-HANDOFF-TIER-AVATARS.md's "preload if instant
+        // switching matters" guidance. 11 small WebPs, cheap to warm all at once.
+        function preloadAvatars(){
+            CONFIG.tiers.forEach(function(t){
+                var im = new Image();
+                im.src = CONFIG.avatarBase + t.avatar + (t.avatarExt || CONFIG.avatarExt);
+            });
+        }
+        var lastShownGiftTs = null;     // dedupe guard: a gift's own `ts` is shown at most once per page load, even if showSignedIn happens to run twice with the same /me payload
+        var welcomeBackShown = false;   // same dedupe pattern -- show the light "welcome back" touch at most once per page load, not on every refresh/poll
+        var gatewaySession = null;      // bearer token for /me, /pay/link, /mcp/me, /mcp/activate
+        var memberEmail = null;         // detected (or manually entered) email
+        var memberUuid = null;          // Ghost member uuid -- /memory/me and /memory/save prove
+                                         // login with {email,uuid} instead of a bearer token, so
+                                         // this has to be captured separately from the /members/api
+                                         // call (see detectMember)
+
+        function fmt(m){ if(m<=0) return "\u2014"; if(m<1) return Math.round(m*1000)+"K"; return (Math.round(m*100)/100)+"M"; }
+        function convert(rupees){
+            var c = CONFIG.currencies[cur] || CONFIG.currencies.INR;
+            if(cur==="INR") return rupees;
+            var d = rupees / c.rate;
+            return d<10 ? Number(d.toFixed(1)) : Math.round(d);
+        }
+        function money(rupees){
+            var c = CONFIG.currencies[cur] || CONFIG.currencies.INR;
+            if(cur==="INR") return "\u20B9"+rupees;
+            return c.symbol + convert(rupees);
+        }
+
+        // Rs.860 (Expert, index 4) is the floor for the "never runs out" claim, per
+        // FRONTEND_AGENT_PROMPT.md section 4 -- each tier now carries its own `unlimited` flag
+        // directly (matches the gateway's /me `unlimited` field once deployed) rather than a
+        // separately-recomputed price threshold, so the two can't drift out of sync.
+        var UNLIMITED_MIN_PRICE = 299;
+        function isUnlimitedTier(price){ return price >= UNLIMITED_MIN_PRICE; }
+
+        // Weekly (2026-09-11) is now a REAL 7-day grant, not a price preview: 1/3 the price and
+        // 1/3 the tokens of Monthly -- matching the "3x tokens" badge shown on the
+        // Monthly toggle (buy monthly, get 3x the tokens for 3x the price) and exactly mirroring
+        // tierGrant() on the gateway, which is what actually computes and validates this.
+        function calc(){
+            var tier = CONFIG.tiers[step];
+            var weekly = kind === "weekly";
+            var amt = weekly ? Math.round(tier.price * CONFIG.weeklyMultiplier) : tier.price;
+            var haiku = weekly ? Math.round(tier.haiku / 3) : tier.haiku;
+            var sonnet = weekly ? Math.round(tier.sonnet / 3) : tier.sonnet;
+            var luna = weekly ? Math.round(tier.luna / 3) : tier.luna;
+            var total = haiku + sonnet + luna;
+            // "Expert AI Total" headline: monthly uses the doc's own published clean figure
+            // (tier.headline); weekly has no published pre-rounded figure, so this applies the
+            // SAME >=2x methodology live rather than inventing a rounding convention the doc
+            // never specified -- see the CONFIG.tiers comment above for the underlying proof.
+            // Weekly is exactly one-third of the monthly advertised total as well as one-third
+            // of each paid model pool; do not derive it from only the paid sub-pools.
+            var headline = weekly ? Math.round(tier.headline / 3) : tier.headline;
+            return {
+              amt: amt, price: tier.price,
+              haiku: haiku, sonnet: sonnet, luna: luna,
+              total: total,
+              headline: headline,
+              unlimited: tier.unlimited,
+              tier: step, gatewayTier: tier.gatewayTier, label: tier.label
+            };
+        }
+
+        function appsLine(tierIdx){
+            var codes = CONFIG.appsByTier[tierIdx] || [];
+            return codes.map(function(code){
+                var p = CONFIG.PRODUCTS[code];
+                if (!p) return "";
+                return '<div class="prod-chip"><b>' + p.name + '</b><span>' + p.desc + '</span></div>';
+            }).join("");
+        }
+
+        // Brief scale-pulse on a value that just changed -- the one deliberate motion moment on
+        // this panel (amount + headline number), not scattered across every element.
+        function pulse(el){
+            el.classList.remove("x-pulse");
+            void el.offsetWidth; // restart the animation
+            el.classList.add("x-pulse");
+        }
+
+        // Owl avatar directly above the price/stepper -- swaps instantly (images are preloaded)
+        // on every +/- step, tracking the same tier index the price and breakdown use, so it
+        // always reflects the tier actually selected, not a separate state of its own.
+        var lastAvatarTier = null;
+        function setAvatar(tierIdx, label){
+            if (tierIdx === lastAvatarTier) return;
+            lastAvatarTier = tierIdx;
+            var t = CONFIG.tiers[tierIdx];
+            var img = $("x-avatar");
+            img.src = CONFIG.avatarBase + t.avatar + (t.avatarExt || CONFIG.avatarExt);
+            img.alt = "Expert AI " + label + " avatar";
+            var nudge = (CONFIG.avatarAdjustments && CONFIG.avatarAdjustments[t.avatar]) || 0;
+            img.style.setProperty("--avatar-y", nudge + "px");
+        }
+
+        // Compare-all-tiers table: purely additive read-only reference, sourced straight from
+        // the same CONFIG.tiers array the stepper/pricing above already uses -- no separate
+        // data, so it can never drift out of sync with the actual tiers on sale. Only ever shows
+        // MONTHLY pricing/tokens (the ladder's canonical figures); weekly is a derived 1/3-token
+        // preview, not a separate plan worth a second column set here. Re-rendered on every
+        // render() call so it always reflects the current currency and highlights whichever tier
+        // is currently selected in the stepper above (a reasonable proxy for "current plan" even
+        // before a real signed-in comparison-to-purchased-tier is wired up).
+        function renderCompareTable(tbodyId, highlightIdx){
+            var rows = CONFIG.tiers.map(function(t, i){
+                var un = isUnlimitedTier(t.price);
+                return '<tr class="' + (i === highlightIdx ? "current" : "") + '">'
+                    + '<td>' + t.label + '</td>'
+                    + '<td>' + money(t.price) + '/mo</td>'
+                    + '<td>' + fmt(t.haiku/1e6) + '</td>'
+                    + '<td>' + fmt(t.sonnet/1e6) + '</td>'
+                    + '<td>' + fmt(t.luna/1e6) + '</td>'
+                    + '<td>' + fmt(t.headline/1e6) + '</td>'
+                    + '<td class="' + (un ? "tier-un" : "") + '">' + (un ? "Yes" : "—") + '</td>'
+                    + '</tr>';
+            }).join("");
+            $(tbodyId).innerHTML = rows;
+        }
+        $("x-compare-toggle").addEventListener("click", function(){
+            var wrap = $("x-compare-wrap");
+            var opening = wrap.classList.contains("hidden");
+            wrap.classList.toggle("hidden");
+            $("x-compare-toggle").textContent = opening ? "Hide comparison" : "Compare all plans";
+            if (opening) renderCompareTable("x-compare-tbody", step);
+        });
+        // Same table, reused for the pre-login funnel -- highlights CONFIG.recommendedTier
+        // instead of the stepper's `step`, since a signed-out visitor has no "current" plan yet.
+        $("x-pre-compare-toggle").addEventListener("click", function(){
+            var wrap = $("x-pre-compare-wrap");
+            var opening = wrap.classList.contains("hidden");
+            wrap.classList.toggle("hidden");
+            $("x-pre-compare-toggle").textContent = opening ? "Hide comparison" : "Compare 4 plans";
+            if (opening) renderCompareTable("x-pre-compare-tbody", CONFIG.recommendedTier);
+        });
+
+        function render(){
+            var c = calc();
+            $("x-cursym").textContent = (CONFIG.currencies[cur] || CONFIG.currencies.INR).symbol;
+            $("x-amt").textContent = c.label;
+            $("x-price").textContent = convert(c.amt);
+            $("x-buyamt").textContent = money(c.amt);
+            $("x-per-unit").textContent = kind==="weekly" ? "per week" : "per month";
+            $("x-tier").textContent = c.label;
+            $("x-reco-badge").classList.toggle("hidden", c.tier !== CONFIG.recommendedTier);
+            $("x-tier-apps").innerHTML = appsLine(c.tier);
+            setAvatar(c.tier, c.label);
+            $("x-b-haiku").textContent = c.haiku ? "Included" : "Available on upgrade";
+            $("x-b-sonnet").textContent = c.sonnet ? "Included" : "Available on upgrade";
+            $("x-b-luna").textContent = "Included";
+            // "Expert AI" row shows just its OWN component -- the uncapped free-tier fallback --
+            // i.e. headline minus the three paid pools already itemized above it, so this row plus
+            // Haiku + Sonnet + Luna actually sums to "Total balance" below, matching the caption
+            // ("Your three model pools above, plus the unlimited Expert AI free-tier fallback").
+            // Previously this showed the full `headline` figure -- the same number as Total itself,
+            // which made the breakdown not actually add up. "Total balance" (bottom, biggest/purple)
+            // still shows the full headline number -- that one IS the combined payoff figure.
+            $("x-b-expert").textContent = "Included";
+            // Use the calculated cadence-specific headline here. The previous fallback used the
+            // monthly marketing label unconditionally, so Essential incorrectly showed 6M+ on
+            // the weekly toggle (and the same bug affected Pro/Max/Founder).
+            $("x-b-total").textContent = fmt(c.headline / 1e6) + "+ usage";
+            pulse($("x-amt")); pulse($("x-b-expert")); pulse($("x-b-total"));
+
+            var unlimited = isUnlimitedTier(c.price);
+            $("x-unlimited-badge").classList.toggle("hidden", !unlimited);
+            $("x-fineprint").innerHTML = unlimited
+                ? 'Haiku runs everyday chat; Sonnet steps in on hard tasks or when you say "review". When balance runs out you keep going on the Expert AI engine: never a wall.'
+                : 'Haiku runs everyday chat; Sonnet steps in on hard tasks or when you say "review". <b>' + money(UNLIMITED_MIN_PRICE) + '+ plans keep working</b>. Expert AI continues with available models and fallbacks.';
+
+            $("x-fill").style.width = (step/(STEP_MAX-STEP_MIN)*100) + "%";
+            $("x-dec").disabled = step<=STEP_MIN;
+            $("x-inc").disabled = step>=STEP_MAX;
+            // Weekly is a real, purchasable 7-day SKU now (see calc()) -- buy stays enabled.
+            // The note explains the tradeoff instead of blocking the button.
+            var weeklySelected = kind === "weekly";
+            $("x-buy").disabled = false;
+            $("x-weekly-note").style.display = weeklySelected ? "block" : "none";
+            $("x-weekly-note").textContent = "7-day pass - 1/3 the tokens of Monthly, renews only when you buy again.";
+            if (!$("x-compare-wrap").classList.contains("hidden")) renderCompareTable("x-compare-tbody", step);
+
+            // Pre-login funnel price line: same `cur`/`money()` the rest of the page uses, so it
+            // never drifts out of sync with whatever currency is selected.
+            $("x-pre-price-from").textContent = money(CONFIG.tiers[0].price);
+            $("x-pre-price-unlimited").textContent = money(UNLIMITED_MIN_PRICE);
+            if (!$("x-pre-compare-wrap").classList.contains("hidden")) renderCompareTable("x-pre-compare-tbody", CONFIG.recommendedTier);
+        }
+
+        function setKind(next){
+            kind = next;
+            store.set("xai_kind", kind);
+            $("x-monthly").classList.toggle("on", kind==="monthly");
+            $("x-weekly").classList.toggle("on", kind==="weekly");
+            $("x-monthly").setAttribute("aria-pressed", kind==="monthly");
+            $("x-weekly").setAttribute("aria-pressed", kind==="weekly");
+            render();
+        }
+        function setCur(next){
+            cur = CONFIG.currencies[next] ? next : "INR";
+            store.set("xai_cur", cur);
+            render();
+        }
+        function setStep(next){
+            step = Math.max(STEP_MIN, Math.min(STEP_MAX, next));
+            store.set("xai_step", String(step));
+            render();
+        }
+
+        $("x-monthly").addEventListener("click", function(){ setKind("monthly"); });
+        $("x-weekly").addEventListener("click", function(){ setKind("weekly"); });
+        $("x-cur-select").addEventListener("change", function(){ setCur(this.value); });
+        $("x-dec").addEventListener("click", function(){ setStep(step-1); });
+        $("x-inc").addEventListener("click", function(){ setStep(step+1); });
+
+        $("x-tab-balance").addEventListener("click", function(){
+            $("x-tab-balance").classList.add("on"); $("x-tab-usage").classList.remove("on");
+            $("x-view-balance").classList.remove("hidden"); $("x-view-usage").classList.add("hidden");
+        });
+        $("x-tab-usage").addEventListener("click", function(){
+            $("x-tab-usage").classList.add("on"); $("x-tab-balance").classList.remove("on");
+            $("x-view-usage").classList.remove("hidden"); $("x-view-balance").classList.add("hidden");
+        });
+
+        // App-code -> display name, matching TIER_LADDER's `apps` field exactly as verified
+        // live in the deployed gateway (expert-ai-gateway, checked 2026-09-11 via the
+        // Cloudflare MCP worker source): ["android","cli","expert-ai-agent","expert-os","pro"].
+        // Reuses the same CONFIG.PRODUCTS catalog and chip markup as appsLine() above, so a
+        // signed-in user's actual unlocked apps (from /me's real `apps` field) render identically
+        // to the plan-picker's preview -- one source of names/descriptions, not two.
+        function appsLineFromCodes(codes){
+            return (codes || []).map(function(code){
+                var p = CONFIG.PRODUCTS[code];
+                if (!p) return "";
+                return '<div class="prod-chip"><b>' + p.name + '</b><span>' + p.desc + '</span></div>';
+            }).join("");
+        }
+
+        function showSignedIn(s){
+            $("x-signedout").classList.add("hidden");
+            $("x-activation").classList.add("hidden");
+            $("x-signedin").classList.remove("hidden");
+            $("x-authbtn").textContent = "My account";
+            $("x-authbtn").href = PORTAL.account;
+            $("x-hello").textContent = s.email ? "\u00B7 " + s.email : "";
+
+            // Founder gift: /me includes `gift` exactly ONCE, the first time /me is called after
+            // one is sent -- the server clears it after that single read, so it can never show
+            // twice. This deliberately just reacts to whatever's already on the SAME /me response
+            // every call site here already fetched -- no extra fetch is ever added anywhere, which
+            // is exactly what would burn the one-time flag before the visitor sees it. showSignedIn
+            // runs on every refresh (sign-in, periodic refresh, polling) so a gift that arrives
+            // while someone's already on the page is caught the same way as a fresh sign-in.
+            if (s.gift && s.gift.ts !== lastShownGiftTs){
+                lastShownGiftTs = s.gift.ts;
+                showGiftModal(s.gift);
+            }
+
+            // Welcome back: light, one-time-per-page-load touch (not a modal, not repeated on
+            // every periodic refresh/poll within the same visit) for an account that's been
+            // inactive a few days. Skipped entirely for a brand-new account (lastReqAt === 0)
+            // per spec -- there's nothing to "welcome back" to yet.
+            if (s.welcomeBack && s.lastReqAt && !welcomeBackShown){
+                welcomeBackShown = true;
+                var wbEl = $("x-welcome-back");
+                wbEl.classList.remove("hidden");
+                wbEl.textContent = "Welcome back — it's been a few days since your last visit.";
+            }
+
+            // Refer & earn: the link is just this account's own email as a query param -- /auth/start
+            // reads it as `ref` on whoever signs in via that link's Continue box, and the gateway
+            // (not this page) decides whether a bonus actually fires (only on that new account's
+            // very first successful login, and only if THIS account -- the referrer -- already has
+            // a real tier). Shown for any signed-in account regardless of plan; a free-tier account
+            // sharing their link just means the bonus silently won't fire until they upgrade, per
+            // the gateway's own rule -- not something worth gating the UI on here.
+            if (s.email){
+                $("x-refer-sec").classList.remove("hidden");
+                $("x-refer-panel").classList.remove("hidden");
+                // Points at THIS console page, not the Ghost portal signup URL directly -- a
+                // referred visitor needs to land back here so this page's own /auth/start call
+                // (the only place `ref` actually gets read and forwarded) runs, regardless of
+                // whether they then use "Sign in" or "Create account" on the real portal.
+                $("x-refer-url").value = window.location.origin + window.location.pathname + "?ref=" + encodeURIComponent(s.email);
+                // The actual incentive, stated in real numbers -- the whole point of the card, so
+                // it needs to be visible up front, not implied by the copy above it.
+                var rb = CONFIG.REFERRAL_BONUS;
+                $("x-refer-bonus").innerHTML = "<b>You and your friend each get:</b> +" + rb.haiku.toLocaleString()
+                    + " Haiku, +" + rb.sonnet.toLocaleString() + " Sonnet, +" + rb.luna.toLocaleString() + " Luna.";
+            }
+
+            var h = s.haiku || {used:0,total:0}, sn = s.sonnet || {used:0,total:0}, l = s.luna || {used:0,total:0};
+            $("x-haiku-r").textContent = fmt((h.total-h.used)/1e6);  $("x-haiku-t").textContent = fmt(h.total/1e6);
+            $("x-sonnet-r").textContent = fmt((sn.total-sn.used)/1e6); $("x-sonnet-t").textContent = fmt(sn.total/1e6);
+            $("x-luna-r").textContent = fmt((l.total-l.used)/1e6); $("x-luna-t").textContent = fmt(l.total/1e6);
+            var expDate = s.expires ? new Date(s.expires) : null;
+            var validExp = expDate && !isNaN(expDate);
+            $("x-planexp").textContent = validExp ? " \u00B7 expires " + expDate.toLocaleDateString() : "";
+
+            // total:0 across the board means no plan has ever been purchased --
+            // show that plainly instead of a wall of "-- of --". planLabel, apps and unlimited
+            // are all real fields on /me now (verified live against the deployed gateway,
+            // 2026-09-11) -- no more matching budgets against CONFIG.tiers to guess the tier.
+            var hasPlan = (h.total + sn.total + l.total) > 0;
+            $("x-planname").textContent = hasPlan ? (s.planLabel || "\u2014") : "No active plan";
+            $("x-noplan-msg").classList.toggle("hidden", hasPlan);
+            $("x-nrl-badge").classList.toggle("hidden", !hasPlan);
+
+            // Exact tier, shown prominently in the header (not just buried in the balance panel).
+            $("x-tier-badge").classList.toggle("hidden", !hasPlan);
+            if (hasPlan) $("x-tier-badge").textContent = s.planLabel || "\u2014";
+
+            // Usage tab: same real used/total numbers as the Balance tab, reframed as % consumed
+            // this cycle, plus a lifetime section below it fed by the DO's own never-reset
+            // counters (haiku_lifetime/sonnet_lifetime/luna_lifetime/free_lifetime) -- these
+            // exist in gateway storage already (expert_ai_used has always been tracked this way)
+            // but are only broken out per-model and exposed on /me as of the pending gateway
+            // deploy, so `s.lifetime` is optional here and the section hides until it's live.
+            function usageRow(label, pool, plainTag){
+                var pct = pool.total > 0 ? Math.min(100, Math.round((pool.used / pool.total) * 100)) : 0;
+                var tag = plainTag ? '<div class="plain-tag">' + plainTag + '</div>' : '';
+                return tag + '<div class="u-head"><b>' + label + '</b><span>' + fmt(pool.used/1e6) + ' of ' + fmt(pool.total/1e6) + ' \u00b7 ' + pct + '%</span></div>' +
+                       '<div class="usage-track"><div class="usage-fill" style="width:' + pct + '%"></div></div>';
+            }
+            function lifetimeRow(label, tokens, plainTag){
+                var tag = plainTag ? '<div class="plain-tag">' + plainTag + '</div>' : '';
+                return tag + '<div class="u-head"><b>' + label + '</b><span>' + fmt(tokens/1e6) + ' used since Sept 13</span></div>';
+            }
+            $("x-usage-haiku").innerHTML = usageRow("Claude Haiku 4.5", h, "Fast everyday answers");
+            $("x-usage-sonnet").innerHTML = usageRow("Claude Sonnet 5.5", sn, "Deep research & coding");
+            $("x-usage-luna").innerHTML = usageRow("ChatGPT Luna", l, "Creative & general chat");
+
+            // Rough spend forecast: burn rate purely from lifetime.{haiku,sonnet,luna} (tracked
+            // since a fixed, known start date, 2026-09-13) divided by days elapsed since then,
+            // projected against the CURRENT remaining paid balance. Free/fallback usage is
+            // deliberately excluded from the burn-rate total -- it's unlimited and doesn't draw
+            // down anything, so including it would understate how fast the real balance is going.
+            (function(){
+                var forecastEl = $("x-spend-forecast");
+                var lt = s.lifetime;
+                if (!lt){ forecastEl.classList.add("hidden"); return; }
+                var lifetimeTotal = (lt.haiku || 0) + (lt.sonnet || 0) + (lt.luna || 0);
+                var daysSince = Math.max(1, (Date.now() - Date.UTC(2026, 8, 13)) / 86400000); // month is 0-indexed: 8 = Sept
+                var burnPerDay = lifetimeTotal / daysSince;
+                var remaining = (h.total - h.used) + (sn.total - sn.used) + (l.total - l.used);
+                if (burnPerDay <= 0 || remaining <= 0){ forecastEl.classList.add("hidden"); return; }
+                var daysLeft = Math.round(remaining / burnPerDay);
+                forecastEl.classList.remove("hidden");
+                forecastEl.textContent = daysLeft < 1
+                    ? "At your current pace, your balance may run out today."
+                    : "At your current pace, ~" + daysLeft + " day" + (daysLeft === 1 ? "" : "s") + " left.";
+            })();
+
+            var lifetime = s.lifetime || null;
+            var hasLifetime = !!lifetime;
+            $("x-lifetime-head").classList.toggle("hidden", !hasLifetime);
+            if (hasLifetime){
+                $("x-lifetime-haiku").innerHTML = lifetimeRow("Claude Haiku 4.5", lifetime.haiku || 0, "Fast everyday answers");
+                $("x-lifetime-sonnet").innerHTML = lifetimeRow("Claude Sonnet 5.5", lifetime.sonnet || 0, "Deep research & coding");
+                $("x-lifetime-luna").innerHTML = lifetimeRow("ChatGPT Luna", lifetime.luna || 0, "Creative & general chat");
+                $("x-lifetime-free").innerHTML = lifetimeRow("Expert AI (free/fallback)", lifetime.free || 0, "Unlimited assistant");
+            }
+            $("x-lifetime-haiku").classList.toggle("hidden", !hasLifetime);
+            $("x-lifetime-sonnet").classList.toggle("hidden", !hasLifetime);
+            $("x-lifetime-luna").classList.toggle("hidden", !hasLifetime);
+            $("x-lifetime-free").classList.toggle("hidden", !hasLifetime);
+
+            // Grand total across everything ever recorded for this account: the Sept-13-onward
+            // per-model lifetime pools plus the older, separately-tracked legacyGrant usage.
+            // Neither bucket alone is "all usage" -- only the sum is, so this is shown as its
+            // own headline figure rather than folded into either section above.
+            var legacyForTotal = s.legacyGrant || null;
+            var hasAnyTotal = hasLifetime || !!legacyForTotal;
+            if (hasAnyTotal){
+                var grandTotal = (lifetime ? ((lifetime.haiku||0)+(lifetime.sonnet||0)+(lifetime.luna||0)+(lifetime.free||0)) : 0)
+                    + (legacyForTotal ? ((legacyForTotal.freeUsed||0)+(legacyForTotal.proUsed||0)+(legacyForTotal.foundationUsed||0)) : 0);
+                $("x-total-usage").textContent = fmt(grandTotal/1e6) + " tokens";
+            }
+            $("x-total-usage-wrap").classList.toggle("hidden", !hasAnyTotal);
+
+            // Legacy pre-tier-ladder grants (gateway-confirmed field/shape 2026-09-13:
+            // legacyGrant.{free,freeUsed,pro,proUsed,foundation,foundationUsed}) -- a genuinely
+            // SEPARATE, older system, not a continuation of `lifetime` (which only started
+            // counting 2026-09-13) or part of the current plan's balance. Labeled and shown as
+            // its own distinct section rather than summed into anything else, per the gateway
+            // agent's explicit correction: these are two different eras, don't blur them into one
+            // misleading "all-time" figure.
+            var legacy = s.legacyGrant || null;
+            var legacyEl = $("x-legacy-line");
+            if (legacyEl){
+                var legacyTotal = legacy ? ((legacy.free||0)+(legacy.pro||0)+(legacy.foundation||0)) : 0;
+                if (legacy && legacyTotal > 0){
+                    legacyEl.classList.remove("hidden");
+                    var legacyParts = [];
+                    if (legacy.free) legacyParts.push(fmt((legacy.free-(legacy.freeUsed||0))/1e6) + " of " + fmt(legacy.free/1e6) + " free");
+                    if (legacy.pro) legacyParts.push(fmt((legacy.pro-(legacy.proUsed||0))/1e6) + " of " + fmt(legacy.pro/1e6) + " pro");
+                    if (legacy.foundation) legacyParts.push(fmt((legacy.foundation-(legacy.foundationUsed||0))/1e6) + " of " + fmt(legacy.foundation/1e6) + " foundation");
+                    legacyEl.innerHTML = "<b>Legacy plan (pre-upgrade):</b> " + legacyParts.join(" &middot; ") +
+                        " remaining: a separate, older balance, not part of your current plan above.";
+                } else {
+                    legacyEl.classList.add("hidden");
+                }
+            }
+
+            // Gift lifetime total: a running, never-clearing running total of everything ever
+            // gifted (separate from the one-time `gift` popup flag above, which fires once then
+            // the server clears it). Gifted tokens merge into the SAME pool as purchased tokens
+            // the moment they're granted -- same as every other grant path in this system -- so
+            // there's no such thing as a separate "gift balance" or "gift usage" to show here.
+            // This is deliberately just the received total, nothing implying more than that exists.
+            var giftLifetime = s.giftLifetime || null;
+            var giftLifetimeEl = $("x-gift-lifetime-line");
+            if (giftLifetimeEl){
+                var giftTotal = giftLifetime ? ((giftLifetime.haiku||0)+(giftLifetime.sonnet||0)+(giftLifetime.luna||0)) : 0;
+                if (giftTotal > 0){
+                    var giftParts = [];
+                    if (giftLifetime.haiku) giftParts.push("+" + giftLifetime.haiku.toLocaleString() + " Haiku");
+                    if (giftLifetime.sonnet) giftParts.push("+" + giftLifetime.sonnet.toLocaleString() + " Sonnet");
+                    if (giftLifetime.luna) giftParts.push("+" + giftLifetime.luna.toLocaleString() + " Luna");
+                    giftLifetimeEl.classList.remove("hidden");
+                    giftLifetimeEl.innerHTML = "<b>Gifts received:</b> " + giftParts.join(", ") + " (all time)";
+                } else {
+                    giftLifetimeEl.classList.add("hidden");
+                }
+            }
+
+            var appsEl = $("x-my-apps");
+            var appsHtml = hasPlan ? appsLineFromCodes(s.apps) : "";
+            if (appsHtml){
+                appsEl.innerHTML = appsHtml;
+                appsEl.classList.remove("hidden");
+            } else {
+                appsEl.classList.add("hidden");
+            }
+
+            var unlimited = hasPlan && !!s.unlimited;
+            if (unlimited){
+                $("x-engine-amt").textContent = "Unlimited";
+                $("x-engine-sub").textContent = "fine-tuned LLMs \u00b7 tools \u00b7 web \u00b7 vault";
+            } else if (hasPlan){
+                $("x-engine-amt").textContent = "Limited";
+                $("x-engine-sub").textContent = "upgrade to " + money(UNLIMITED_MIN_PRICE) + "+ for unlimited";
+            } else {
+                $("x-engine-amt").textContent = "--";
+                $("x-engine-sub").textContent = "fine-tuned LLMs \u00b7 tools \u00b7 web \u00b7 vault";
+            }
+
+            // Subscription status (2026-09-12) -- verified live against the just-deployed
+            // gateway (Cloudflare MCP pull of expert-ai-gateway, handleMe/handlePaySubscribe):
+            // GET /me now carries subscription:{id,status,tierIdx,kind}|null. status is one of
+            // created|pending|active|paused|cancelled|halted|completed (the FULL set actually
+            // used server-side, wider than "pending/active/paused/cancelled" -- confirmed by
+            // reading handlePayWebhook's subscription.* branches directly, not assumed). `kind`
+            // here is the BILLING CADENCE (weekly/monthly), not a purchase-type string -- a
+            // one-time buyer is simply identified by subscription being null. There is no
+            // user-facing cancel endpoint yet (/admin/cancel-subscription is founder-only), so
+            // anything other than "active" points the customer at support instead of a fake
+            // Cancel button this page can't actually back.
+            var sub = s.subscription || null;
+            var subEl = $("x-sub-line");
+            var subActive = sub && sub.status === "active";
+            if (sub){
+                var SUPPORT_URL = "https://wa.me/919914499477?text=Hi%2C%20I%20need%20help%20with%20my%20Expert%20AI%20subscription";
+                var lastEventTxt = sub.lastEventAt ? " (last checked " + new Date(sub.lastEventAt * 1000).toLocaleString() + ")" : "";
+                var subMsgs = {
+                    created: "Almost there — Razorpay is confirming your mandate now, this usually takes under a minute." + (sub.lastError ? " Last issue: " + sub.lastError + "." : "") + lastEventTxt,
+                    pending: "Payment pending: Razorpay is retrying your last charge.",
+                    active: "Renews automatically" + (validExp ? " around " + expDate.toLocaleDateString() : "") + ".",
+                    paused: "Autopay is paused: no charges until it's resumed.",
+                    cancelled: "Subscription cancelled: you keep your current balance until it expires, then buy again to continue.",
+                    halted: "Autopay failed and stopped: update your payment method to keep it running.",
+                    completed: "Subscription completed: buy again to continue."
+                };
+                subEl.classList.remove("hidden");
+                subEl.classList.toggle("warn", !subActive);
+                subEl.innerHTML = (subMsgs[sub.status] || ("Subscription status: " + sub.status))
+                    + (subActive ? "" : ' <button class="mini-link" id="x-sub-recheck" type="button" style="text-decoration:underline">Refresh status</button> &#183; <a href="' + SUPPORT_URL + '" target="_blank" rel="noopener">Get help &rarr;</a>');
+                // Self-service cancel (gateway-confirmed live 2026-09-13, POST
+                // /pay/subscription/cancel) -- only offered for a healthy active subscription;
+                // every other state already has its own guidance/support link above, and
+                // cancelling something already broken/pending isn't the action a user needs there.
+                $("x-sub-cancel").classList.toggle("hidden", !subActive);
+                if (!subActive){
+                    var recheckBtn = $("x-sub-recheck");
+                    var prevStatus = sub.status;
+                    if (recheckBtn) recheckBtn.addEventListener("click", function(){
+                        recheckBtn.textContent = "Checking…";
+                        recheckBtn.disabled = true;
+                        refreshMe().catch(function(){ return null; }).then(function(me){
+                            // showSignedIn() (inside refreshMe) has already re-rendered this whole
+                            // section by now -- if the status genuinely didn't change, a silent
+                            // re-render looks identical to nothing happening, so say so explicitly.
+                            var newStatus = me && me.subscription && me.subscription.status;
+                            if (me && newStatus === prevStatus){
+                                showToast("Still " + prevStatus + " — no update yet.");
+                            } else if (!me){
+                                showToast("Couldn't refresh — check your connection and try again.");
+                            }
+                            recheckBtn.textContent = "Refresh status";
+                            recheckBtn.disabled = false;
+                        });
+                    });
+                }
+            } else {
+                subEl.classList.add("hidden");
+                $("x-sub-cancel").classList.add("hidden");
+            }
+
+            // Stuck subscription: /me now flags subscription.stuck when it's sat in
+            // creating/created for >10min with no webhook confirmation -- i.e. the visitor is
+            // mid-purchase seeing nothing, most likely because Razorpay's webhook never arrived.
+            // Separate banner from the normal subMsgs.created copy above (which just says "almost
+            // there") since a genuinely stuck purchase needs an actual way out, not just patience.
+            var stuckEl = $("x-sub-stuck-line");
+            if (sub && sub.stuck){
+                stuckEl.classList.remove("hidden");
+                stuckEl.innerHTML = "We haven't heard back from your bank/UPI app about this subscription yet. "
+                    + "If you completed the payment, give it a few minutes — otherwise you can "
+                    + '<button class="mini-link" id="x-sub-stuck-retry" type="button" style="text-decoration:underline;padding:0">retry</button> '
+                    + 'or contact <a href="mailto:support@ssv.asia">support@ssv.asia</a>.';
+                var stuckRetryBtn = $("x-sub-stuck-retry");
+                if (stuckRetryBtn) stuckRetryBtn.addEventListener("click", function(){
+                    // Just re-triggers the exact same subscribe flow as the Subscribe button below --
+                    // its own auto-cancel-old-before-new logic on the gateway already handles cleaning
+                    // up the stuck attempt, so nothing extra needs to happen here.
+                    $("x-plan-sec").scrollIntoView({behavior: "smooth", block: "start"});
+                    $("x-subscribe").click();
+                });
+            } else {
+                stuckEl.classList.add("hidden");
+            }
+
+            // Renew / exhausted guidance for ONE-TIME (non-subscription) purchases -- a real
+            // recurring subscriber (subActive) doesn't need "plan expires, renew below" nagging
+            // since Razorpay auto-charges them; low-balance guidance still applies either way.
+            var renewEl = $("x-renew-line");
+            // Was AND -- required BOTH Haiku and Sonnet to be critically low before warning at
+            // all, so someone who'd completely burned through Sonnet but still had plenty of
+            // Haiku left got zero warning, even though their Sonnet-dependent tasks (hard tasks,
+            // "review") would silently degrade. Fixed to OR: either pool being critically low is
+            // enough on its own to warrant a warning.
+            var haikuLow = h.total > 0 && (h.total - h.used) <= h.total * 0.05;
+            var sonnetLow = sn.total > 0 && (sn.total - sn.used) <= sn.total * 0.05;
+            var essentiallyExhausted = hasPlan && (haikuLow || sonnetLow);
+            var daysLeft = validExp ? Math.ceil((expDate - Date.now()) / 86400000) : null;
+            var expiringSoon = !subActive && validExp && daysLeft !== null && daysLeft <= 3;
+            if (hasPlan && (essentiallyExhausted || expiringSoon)){
+                renewEl.classList.remove("hidden");
+                renewEl.classList.toggle("warn", essentiallyExhausted);
+                // Copy no longer assumes both pools are low (it can now fire on just one) --
+                // "and/or" stays accurate whichever case triggered it.
+                renewEl.innerHTML = (essentiallyExhausted
+                    ? (unlimited
+                        ? "Haiku and/or Sonnet is almost spent this cycle. The Expert AI engine below keeps working either way."
+                        : "Haiku and/or Sonnet is almost spent this cycle. Below " + money(UNLIMITED_MIN_PRICE) + " your balance won't refill on its own.")
+                    : "Plan expires in " + daysLeft + " day" + (daysLeft === 1 ? "" : "s") + ".")
+                    + (expiringSoon ? ' <a href="#x-plan-sec">Renew below &rarr;</a>' : "");
+            } else {
+                renewEl.classList.add("hidden");
+            }
+        }
+
+        function showSignedOut(msg){
+            $("x-signedout").classList.remove("hidden");
+            $("x-activation").classList.add("hidden");
+            $("x-signedin").classList.add("hidden");
+            $("x-authbtn").textContent = "Sign in";
+            $("x-authbtn").href = PORTAL.signin;
+            $("x-hello").textContent = "";
+            $("x-tier-badge").classList.add("hidden");
+            $("x-refer-sec").classList.add("hidden");
+            $("x-refer-panel").classList.add("hidden");
+            $("x-welcome-back").classList.add("hidden");
+            if (msg) $("x-signedout-msg").textContent = msg;
+            store.del("session_token");
+            gatewaySession = null;
+            mcpShow("preview");
+        }
+
+        // Signed in to ssv.asia, but the gateway rejected the email (not yet
+        // provisioned there, or a transient error) -- distinct from "not signed
+        // in" so we don't dump the visitor back into a Sign-in/Create-account
+        // funnel they don't need.
+        function showActivationNeeded(email, msg){
+            $("x-signedout").classList.add("hidden");
+            $("x-signedin").classList.add("hidden");
+            $("x-activation").classList.remove("hidden");
+            $("x-authbtn").textContent = "My account";
+            $("x-authbtn").href = PORTAL.account;
+            $("x-hello").textContent = email ? "\u00B7 " + email : "";
+            $("x-activation-msg").textContent = msg || "Signed in, but your Expert AI account isn't set up yet.";
+        }
+
+        // Exchange a known email for a gateway session, then load balance.
+        //
+        // CORRECTED 2026-09-11 (later same day) per FRONTEND_AGENT_PROMPT.md section 1: an
+        // earlier draft of this file assumed POST /auth/start returns a token directly. That's
+        // wrong against BOTH the currently-live gateway AND the reworked-but-undeployed one --
+        // the real, already-working flow (used today by the Android app and CLI) is a
+        // nonce+poll device-flow:
+        //   1. POST /auth/start {email} -> {nonce, authUrl, expiresIn} or {error}.
+        //   2. Load authUrl (same-site Ghost /connect/?n=<nonce>) -- since this widget runs on
+        //      ssv.asia itself, a visitor with an existing Ghost session cookie auto-confirms
+        //      the nonce there with no visible UI, so we load it in a hidden iframe instead of
+        //      a popup.
+        //   3. Poll GET /auth/poll?nonce=<nonce> every ~1.5s for {status:"ok", token, ...} (or
+        //      "pending" / "expired").
+        // This is the fix for sign-in not working -- the old code always fell through to the
+        // catch block because res.j.token was never present in a device-flow response.
+        function pollAuth(nonce, deadline){
+            deadline = deadline || (Date.now() + 20000);
+            return fetch(CONFIG.gateway + "/auth/poll?nonce=" + encodeURIComponent(nonce))
+                .then(function(r){ return r.json(); })
+                .then(function(j){
+                    if (j && j.status === "ok" && j.token) return j;
+                    if (j && j.status === "expired") throw new Error("Sign-in link expired - please try again.");
+                    if (Date.now() > deadline) throw new Error("Timed out waiting to confirm sign-in.");
+                    return new Promise(function(resolve){ setTimeout(resolve, 1500); })
+                        .then(function(){ return pollAuth(nonce, deadline); });
+                });
+        }
+
+        // Referral: capture ?ref=<referrer-email> from the URL on ANY load (not just the manual
+        // email-continue path), persist it to localStorage, and strip it from the visible address
+        // bar. This is what makes it work regardless of whether the visitor clicks "Sign in" or
+        // "Create account" on the real Ghost portal -- either way they land back on THIS console
+        // page, and it's THIS page's own /auth/start call (below, from both the manual Continue
+        // box and the cookie-based auto-detect flow) that actually creates the gateway session and
+        // carries `ref` through -- not anything the portal itself does. Only actually cleared once
+        // a session is genuinely established (see establishSession's success branch), so it
+        // survives the redirect through Ghost's own auth pages.
+        try {
+            var refFromUrl = new URLSearchParams(window.location.search).get("ref");
+            if (refFromUrl){
+                store.set("xai_ref", refFromUrl);
+                var cleanUrl = window.location.pathname + window.location.hash;
+                window.history.replaceState(null, "", cleanUrl);
+            }
+        } catch (e) {}
+        function getPendingRef(){ return store.get("xai_ref"); }
+
+        // Google OAuth callback: /auth/google/start redirects back here with ?g_token=&g_email=
+        // once the gateway's own ensure()+issueSession() path has already run server-side -- this
+        // is a REAL session token already, not something that needs another /auth/start round
+        // trip. Captured once at load (same pattern as ?ref= above), stored under the exact same
+        // key normal sign-in uses so every other code path (detectMember's cached-session fallback,
+        // refreshMe, sign-out, etc.) treats it identically to an email sign-in from here on --
+        // no separate "Google session" type anywhere downstream.
+        var googleTokenFromUrl = null, googleEmailFromUrl = null;
+        try {
+            var qp = new URLSearchParams(window.location.search);
+            var gTok = qp.get("g_token"), gEmail = qp.get("g_email");
+            if (gTok){
+                googleTokenFromUrl = gTok;
+                googleEmailFromUrl = gEmail || null;
+                store.set("session_token", gTok);
+                qp.delete("g_token");
+                qp.delete("g_email");
+                var qs = qp.toString();
+                var cleanGUrl = window.location.pathname + (qs ? "?" + qs : "") + window.location.hash;
+                window.history.replaceState(null, "", cleanGUrl);
+            }
+        } catch (e) {}
+
+        function establishSession(email, ref){
+            var body = {email: email};
+            if (ref) body.ref = ref;
+            return fetch(CONFIG.gateway + "/auth/start", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify(body)
+            }).then(function(r){ return r.json().then(function(j){ return {ok: r.ok, j: j}; }); })
+              .then(function(res){
+                  if (!res.ok || !res.j.nonce || !res.j.authUrl){
+                      // e.g. "No Expert AI membership found for this email." -- a real Ghost
+                      // member whose email hasn't been provisioned on the gateway yet.
+                      var em = (res.j && res.j.error && (res.j.error.message || res.j.error)) || "Could not start sign-in.";
+                      throw new Error(em);
+                  }
+                  var ifr = document.createElement("iframe");
+                  ifr.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;border:0;pointer-events:none;left:-9999px;top:-9999px;";
+                  ifr.src = res.j.authUrl;
+                  document.body.appendChild(ifr);
+                  var cleanup = function(){ if (ifr.parentNode) ifr.parentNode.removeChild(ifr); };
+                  return pollAuth(res.j.nonce).then(function(ok){ cleanup(); return ok; })
+                      .catch(function(err){ cleanup(); throw err; });
+              })
+              .then(function(ok){
+                  gatewaySession = ok.token;
+                  store.set("session_token", ok.token);
+                  store.del("xai_ref"); // consumed (or not applicable) -- don't let it linger and attach to some later unrelated login
+                  return fetch(CONFIG.gateway + "/me", { headers: {"Authorization": "Bearer " + ok.token} });
+              })
+              .then(function(r){ return r.json(); })
+              .then(function(me){
+                  me.email = me.email || email;
+                  showSignedIn(me);
+                  renderDownloads(me.apps);
+                  mcpMe();
+                  billingHistoryLoad();
+                  if (memberUuid) memoryLoad();
+              });
+        }
+
+        $("x-send").addEventListener("click", function(){
+            var email = $("x-email").value.trim();
+            if (!email) return;
+            $("x-send").disabled = true;
+            memberEmail = email;
+            establishSession(email, getPendingRef())
+                .catch(function(){ showErrorModal("Couldn't sign you in", "Check the email and try again."); })
+                .then(function(){ $("x-send").disabled = false; });
+        });
+
+        $("x-buy").addEventListener("click", function(){
+            var c = calc();
+            if (!gatewaySession){
+                window.open(PORTAL.signin, "_blank", "noopener");
+                return;
+            }
+            var origBuyText = $("x-buy").textContent;
+            $("x-buy").disabled = true;
+            $("x-buy").textContent = "Processing…";
+            fetch(CONFIG.gateway + "/pay/link", {
+                method: "POST",
+                headers: {"Content-Type": "application/json", "Authorization": "Bearer " + gatewaySession},
+                body: JSON.stringify({tier: c.gatewayTier, amount: c.amt, kind: kind})
+            }).then(function(r){ return r.json(); })
+              .then(function(data){
+                  if (data.url){
+                      try {
+                          localStorage.setItem("xai_pending_purchase", JSON.stringify({tier: c.tier, gatewayTier: c.gatewayTier, kind: kind, label: c.label, ts: Date.now()}));
+                      } catch (e) {}
+                      window.location.href = data.url; // navigating away, no need to restore button text
+                  }
+                  else { showErrorModal("Payment error", "Please try again."); $("x-buy").disabled = false; $("x-buy").textContent = origBuyText; }
+              })
+              .catch(function(e){ showErrorModal("Something went wrong", e.message); $("x-buy").disabled = false; $("x-buy").textContent = origBuyText; });
+        });
+
+        // Simple bottom toast, using the .toast class that was already defined in CSS but never
+        // wired up to anything.
+        function showToast(msg, ms){
+            var t = document.createElement("div");
+            t.className = "toast";
+            t.textContent = msg;
+            // Appended inside #xai-console, not document.body -- .toast's CSS is scoped
+            // "#xai-console .toast" (like everything else in this embed, to survive the host
+            // theme's cascade), so a body-level toast never actually matched that selector and
+            // rendered fully unstyled. Found while wiring the purchase-success modal below.
+            document.getElementById("xai-console").appendChild(t);
+            setTimeout(function(){ if (t.parentNode) t.parentNode.removeChild(t); }, ms || 5000);
+        }
+
+        // Poll /me until the just-purchased plan actually shows up (balances non-zero / tier
+        // changed), same shape as mcpPollProvision below -- a webhook can take a few seconds to
+        // land after Razorpay confirms the mandate in-modal.
+        function pollUntilActive(tries, onConfirmed){
+            tries = tries || 0;
+            if (tries > 14){ return; } // ~20s, then just leave the last refreshMe() result showing
+            refreshMe().catch(function(){}).then(function(me){
+                // `me` is only truthy once refreshMe actually reached the gateway and got a real
+                // /me back (it's a same-tick no-op resolve if gatewaySession isn't set yet) -- so
+                // firing onConfirmed here, once, is a real "server has this session's data" signal,
+                // not just "some time passed since the button was clicked."
+                if (me && onConfirmed){ onConfirmed(me); onConfirmed = null; }
+                setTimeout(function(){ pollUntilActive(tries + 1, onConfirmed); }, 1500);
+            });
+        }
+
+        // Success confirmation after a purchase actually lands server-side (per user feedback:
+        // after subscribing they were left staring at the page with only a quiet toast until the
+        // balance updated on its own, which felt uncertain even though it was working). Shown once,
+        // dismissible, from pollUntilActive's onConfirmed -- never immediately on click/redirect.
+        function showPurchaseSuccessModal(label, grant, kind, isOneTime){
+            var existing = document.getElementById("x-purchase-modal");
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+            var parts = [];
+            if (grant && grant.haiku) parts.push("+" + grant.haiku.toLocaleString() + " Haiku");
+            if (grant && grant.sonnet) parts.push("+" + grant.sonnet.toLocaleString() + " Sonnet");
+            if (grant && grant.luna) parts.push("+" + grant.luna.toLocaleString() + " Luna");
+            var grantLine = parts.length ? parts.join(", ") + " tokens added to your balance." : "Your balance has been updated.";
+            var kindLabel = isOneTime ? "one-time purchase" : (kind === "weekly" ? "weekly plan" : "monthly plan");
+            var overlay = document.createElement("div");
+            overlay.id = "x-purchase-modal";
+            overlay.className = "purchase-modal-overlay";
+            overlay.innerHTML =
+                '<div class="purchase-modal" role="dialog" aria-modal="true">' +
+                    '<button class="purchase-modal-close" id="x-purchase-modal-close" type="button" aria-label="Close">&times;</button>' +
+                    '<div class="purchase-modal-title">' + (isOneTime ? "Thanks for your purchase" : "Thanks for subscribing to Expert AI") + "</div>" +
+                    '<div class="purchase-modal-body">You’re on the <b>' + label + "</b> " + kindLabel + ". " + grantLine + "</div>" +
+                    '<button class="purchase-modal-ok" id="x-purchase-modal-ok" type="button">OK</button>' +
+                "</div>";
+            document.getElementById("xai-console").appendChild(overlay);
+            function close(){ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+            document.getElementById("x-purchase-modal-close").addEventListener("click", close);
+            document.getElementById("x-purchase-modal-ok").addEventListener("click", close);
+            overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+        }
+
+        // Styled two-button confirm, same overlay/card family as everything else -- replaces the
+        // native confirm() before a destructive action (currently just Cancel subscription). A
+        // raw browser confirm() dialog is the kind of thing that reads as an unfinished dev
+        // artifact rather than part of the product, especially as the very first thing someone
+        // sees when trying to cancel. onConfirm only runs if the destructive option is picked;
+        // dismissing any other way (X, backdrop click, "keep" button) does nothing.
+        function showConfirmDialog(title, message, confirmLabel, onConfirm){
+            var existing = document.getElementById("x-confirm-modal");
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+            var overlay = document.createElement("div");
+            overlay.id = "x-confirm-modal";
+            overlay.className = "purchase-modal-overlay";
+            overlay.innerHTML =
+                '<div class="purchase-modal" role="dialog" aria-modal="true">' +
+                    '<button class="purchase-modal-close" id="x-confirm-modal-close" type="button" aria-label="Close">&times;</button>' +
+                    '<div class="purchase-modal-title">' + title + "</div>" +
+                    '<div class="purchase-modal-body">' + message + "</div>" +
+                    '<div class="purchase-modal-actions">' +
+                        '<button class="purchase-modal-secondary" id="x-confirm-modal-keep" type="button">Keep it</button>' +
+                        '<button class="purchase-modal-ok danger" id="x-confirm-modal-go" type="button">' + confirmLabel + "</button>" +
+                    "</div>" +
+                "</div>";
+            document.getElementById("xai-console").appendChild(overlay);
+            function close(){ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+            document.getElementById("x-confirm-modal-close").addEventListener("click", close);
+            document.getElementById("x-confirm-modal-keep").addEventListener("click", close);
+            document.getElementById("x-confirm-modal-go").addEventListener("click", function(){ close(); onConfirm(); });
+            overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+        }
+
+        // Founder gift: a genuine "surprise, free tokens" moment, not just another transactional
+        // modal -- bigger, gold/violet gradient border (same gradient already used for the
+        // reco-badge/tier-badge elsewhere, not a new palette), a scale-in entrance, and a
+        // design-grade inline SVG gift-box icon (no emoji, per the house rule). Same overlay/close
+        // mechanics as every other modal here otherwise -- dismiss is dismiss.
+        function escapeHtml(s){
+            return String(s).replace(/[&<>"']/g, function(c){
+                return {"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;"}[c];
+            });
+        }
+        function showGiftModal(gift){
+            var existing = document.getElementById("x-gift-modal");
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+            var parts = [];
+            if (gift.haiku) parts.push("+" + gift.haiku.toLocaleString() + " Haiku");
+            if (gift.sonnet) parts.push("+" + gift.sonnet.toLocaleString() + " Sonnet");
+            if (gift.luna) parts.push("+" + gift.luna.toLocaleString() + " Luna");
+            var grantLine = parts.length ? parts.join(", ") : "Tokens added to your balance.";
+            var messageHtml = gift.message
+                ? '<div class="gift-message">“' + escapeHtml(gift.message) + '”</div>'
+                : "";
+            var overlay = document.createElement("div");
+            overlay.id = "x-gift-modal";
+            overlay.className = "purchase-modal-overlay";
+            overlay.innerHTML =
+                '<div class="purchase-modal gift" role="dialog" aria-modal="true">' +
+                    '<button class="purchase-modal-close" id="x-gift-modal-close" type="button" aria-label="Close">&times;</button>' +
+                    '<svg class="gift-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">' +
+                        '<rect x="3" y="8" width="18" height="4" rx="1"></rect>' +
+                        '<rect x="4" y="12" width="16" height="9" rx="1"></rect>' +
+                        '<line x1="12" y1="8" x2="12" y2="21"></line>' +
+                        '<path d="M12 8C12 8 9.5 3 7 3.5C4.5 4 6 8 12 8Z"></path>' +
+                        '<path d="M12 8C12 8 14.5 3 17 3.5C19.5 4 18 8 12 8Z"></path>' +
+                    '</svg>' +
+                    '<div class="purchase-modal-title gift-title">You’ve got a gift!</div>' +
+                    '<div class="purchase-modal-body"><b>' + grantLine + "</b></div>" +
+                    messageHtml +
+                    '<button class="purchase-modal-ok gift-ok" id="x-gift-modal-ok" type="button">Nice, thanks!</button>' +
+                "</div>";
+            document.getElementById("xai-console").appendChild(overlay);
+            function close(){ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+            document.getElementById("x-gift-modal-close").addEventListener("click", close);
+            document.getElementById("x-gift-modal-ok").addEventListener("click", close);
+            overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+        }
+
+        // Generic error modal -- same overlay/card mechanics as the purchase-success modal, but
+        // an ".error" variant (red title/OK button) so it never reads as "good news" by accident.
+        // Replaces every bare alert() in the purchase/cancel/auth flows -- alert() blocks the JS
+        // thread, looks like a browser dialog rather than part of the product, and was the single
+        // most "unpolished" thing left in these flows.
+        function showErrorModal(title, message){
+            var existing = document.getElementById("x-error-modal");
+            if (existing && existing.parentNode) existing.parentNode.removeChild(existing);
+            var overlay = document.createElement("div");
+            overlay.id = "x-error-modal";
+            overlay.className = "purchase-modal-overlay";
+            overlay.innerHTML =
+                '<div class="purchase-modal error" role="alertdialog" aria-modal="true">' +
+                    '<button class="purchase-modal-close" id="x-error-modal-close" type="button" aria-label="Close">&times;</button>' +
+                    '<div class="purchase-modal-title">' + title + "</div>" +
+                    '<div class="purchase-modal-body">' + message + "</div>" +
+                    '<button class="purchase-modal-ok" id="x-error-modal-ok" type="button">OK</button>' +
+                "</div>";
+            document.getElementById("xai-console").appendChild(overlay);
+            function close(){ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+            document.getElementById("x-error-modal-close").addEventListener("click", close);
+            document.getElementById("x-error-modal-ok").addEventListener("click", close);
+            overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+        }
+
+        // Cancel confirmation, same visual family as the purchase-success modal, shown only
+        // after refreshMe() confirms the post-cancel state server-side (not optimistically on
+        // click). Reuses the exact same `expires` field the rest of this panel already trusts
+        // for "Renews around X" / "Plan expires in N days" -- not a separate/invented date field,
+        // so if the gateway ever stops sending it, this correctly says "no expiry" instead of
+        // guessing.
+        function showCancelConfirmModal(me){
+            var h = me.haiku || {used:0,total:0}, sn = me.sonnet || {used:0,total:0}, l = me.luna || {used:0,total:0};
+            var parts = [];
+            if (h.total - h.used > 0) parts.push(fmt((h.total - h.used)/1e6) + " Haiku");
+            if (sn.total - sn.used > 0) parts.push(fmt((sn.total - sn.used)/1e6) + " Sonnet");
+            if (l.total - l.used > 0) parts.push(fmt((l.total - l.used)/1e6) + " Luna");
+            var balanceLine = parts.length ? "You still have <b>" + parts.join(", ") + "</b> remaining." : "Your remaining balance is still usable.";
+            var expDate = me.expires ? new Date(me.expires) : null;
+            var validExp = expDate && !isNaN(expDate);
+            var expiryLine = validExp ? "It's usable until " + expDate.toLocaleDateString() + "." : "It has no expiry — it stays usable until spent.";
+            var overlay = document.createElement("div");
+            overlay.id = "x-cancel-modal";
+            overlay.className = "purchase-modal-overlay";
+            overlay.innerHTML =
+                '<div class="purchase-modal" role="dialog" aria-modal="true">' +
+                    '<button class="purchase-modal-close" id="x-cancel-modal-close" type="button" aria-label="Close">&times;</button>' +
+                    '<div class="purchase-modal-title">Subscription cancelled</div>' +
+                    '<div class="purchase-modal-body">No more automatic charges. ' + balanceLine + " " + expiryLine + "</div>" +
+                    '<button class="purchase-modal-ok" id="x-cancel-modal-ok" type="button">OK</button>' +
+                "</div>";
+            document.getElementById("xai-console").appendChild(overlay);
+            function close(){ if (overlay.parentNode) overlay.parentNode.removeChild(overlay); }
+            document.getElementById("x-cancel-modal-close").addEventListener("click", close);
+            document.getElementById("x-cancel-modal-ok").addEventListener("click", close);
+            overlay.addEventListener("click", function(e){ if (e.target === overlay) close(); });
+        }
+
+        // A "Buy once" purchase does a full-page redirect to Razorpay's hosted checkout and back
+        // (unlike Subscribe's in-page modal), so nothing on THIS page load can poll it directly --
+        // the tab is gone until the visitor returns. Stash what they were buying before leaving, so
+        // the fresh page load after redirect can pick it up and show the same success confirmation
+        // once a real session/refresh confirms it landed, exactly like the subscribe path.
+        function checkPendingOneTimePurchase(){
+            var raw;
+            try { raw = localStorage.getItem("xai_pending_purchase"); } catch (e) { return; }
+            if (!raw) return;
+            var p;
+            try { p = JSON.parse(raw); } catch (e) { try { localStorage.removeItem("xai_pending_purchase"); } catch (e2) {} return; }
+            if (!p || (Date.now() - p.ts) > 15 * 60 * 1000){ try { localStorage.removeItem("xai_pending_purchase"); } catch (e3) {} return; } // stale (>15min old), ignore
+            var tierCfg = CONFIG.tiers[p.tier];
+            if (!tierCfg){ try { localStorage.removeItem("xai_pending_purchase"); } catch (e4) {} return; }
+            // Only clear the pending flag once pollUntilActive actually confirms it server-side --
+            // NOT on read. If gatewaySession takes unusually long to establish (slow network, slow
+            // member-lookup) pollUntilActive's own ~20s cap can expire before a session ever forms,
+            // and clearing the flag up front would silently and permanently lose the pending
+            // confirmation with no way to retry. Leaving it in place means a slower-than-usual but
+            // eventually-successful page load (e.g. a manual refresh) still picks it up and shows
+            // the modal; it only ever gets consumed by a real confirmed onConfirmed() firing below.
+            pollUntilActive(0, function(){
+                try { localStorage.removeItem("xai_pending_purchase"); } catch (e5) {}
+                showPurchaseSuccessModal(p.label || tierCfg.label, {haiku: tierCfg.haiku, sonnet: tierCfg.sonnet, luna: tierCfg.luna}, p.kind, true);
+            });
+        }
+
+        // POST /pay/subscribe {tier, kind} -- REAL recurring autopay via Razorpay Subscriptions.
+        // CORRECTED 2026-09-13 per the gateway agent: the old flow did a full-page redirect to
+        // Razorpay's hosted mandate page via window.location.href, but Razorpay Subscriptions has
+        // no callback_url/redirect_url -- there is no way back to this site after the visitor
+        // approves the mandate there, which is the exact stuck-loading-then-reset bug a real
+        // customer hit. Fixed the same way MCP credit top-ups already work (below, x-mcp-pay): an
+        // in-page Razorpay Checkout modal, using the subscription_id it now returns, so nothing
+        // ever navigates away from this page.
+        $("x-subscribe").addEventListener("click", function(){
+            var c = calc();
+            if (!gatewaySession){
+                window.open(PORTAL.signin, "_blank", "noopener");
+                return;
+            }
+            var origSubLabel = $("x-subscribe-label").textContent;
+            function resetSubLabel(){ $("x-subscribe-label").textContent = origSubLabel; }
+            $("x-subscribe").disabled = true;
+            $("x-subscribe-label").textContent = "Starting\u2026";
+            fetch(CONFIG.gateway + "/pay/subscribe", {
+                method: "POST",
+                headers: {"Content-Type": "application/json", "Authorization": "Bearer " + gatewaySession},
+                body: JSON.stringify({tier: c.gatewayTier, kind: kind})
+            }).then(function(r){ return r.json(); })
+              .then(function(data){
+                  if (!data.ok || !data.subscriptionId || typeof Razorpay === "undefined"){
+                      showErrorModal("Couldn't start subscription", (data.error && data.error.message) || data.error || "Please try again.");
+                      $("x-subscribe").disabled = false;
+                      resetSubLabel();
+                      return;
+                  }
+                  // Text goes back to normal here, but the button stays disabled (as before) for as
+                  // long as Razorpay's own modal is open -- that modal is now the in-flight signal.
+                  resetSubLabel();
+                  var rzp = new Razorpay({
+                      key: data.key,
+                      subscription_id: data.subscriptionId,
+                      name: "Expert AI",
+                      description: c.label + " \u2014 " + (kind === "weekly" ? "weekly" : "monthly") + " autopay",
+                      theme: {color: "#a855f7"},
+                      handler: function(){
+                          var g = data.grant || {};
+                          var parts = [];
+                          if (g.haiku) parts.push("+" + g.haiku.toLocaleString() + " Haiku");
+                          if (g.sonnet) parts.push("+" + g.sonnet.toLocaleString() + " Sonnet");
+                          if (g.luna) parts.push("+" + g.luna.toLocaleString() + " Luna");
+                          showToast(parts.length ? "Activating your plan \u2014 " + parts.join(", ") + " added" : "Activating your plan\u2026", 6000);
+                          $("x-subscribe").disabled = false;
+                          pollUntilActive(0, function(){
+                              showPurchaseSuccessModal(c.label, data.grant || {}, kind, false);
+                          });
+                      },
+                      modal: { ondismiss: function(){ $("x-subscribe").disabled = false; } }
+                  });
+                  rzp.on("payment.failed", function(){ $("x-subscribe").disabled = false; showErrorModal("Payment failed", "No charge was made \u2014 you can try again whenever you're ready."); });
+                  rzp.open();
+              })
+              .catch(function(e){ showErrorModal("Something went wrong", e.message); $("x-subscribe").disabled = false; resetSubLabel(); });
+        });
+
+        // POST /pay/subscription/cancel -- self-service cancel, session bearer auth, empty body
+        // (gateway-confirmed live 2026-09-13). Replaces the WhatsApp-only "Get help" path for an
+        // active subscription -- support link stays for every OTHER subscription state (created/
+        // pending/halted/etc.) where there's a real problem to talk through, but an active,
+        // healthy subscription can now be cancelled directly instead of asking support to do it.
+        function doCancelSubscription(){
+            $("x-sub-cancel").disabled = true;
+            $("x-sub-cancel").textContent = "Cancelling\u2026";
+            fetch(CONFIG.gateway + "/pay/subscription/cancel", {
+                method: "POST",
+                headers: {"Authorization": "Bearer " + gatewaySession}
+            }).then(function(r){ return r.json(); })
+              .then(function(data){
+                  if (data && data.ok !== false){
+                      showToast("Subscription cancelled.");
+                      refreshMe().catch(function(){}).then(function(me){ if (me) showCancelConfirmModal(me); });
+                  }
+                  else { showErrorModal("Couldn't cancel", (data.error && data.error.message) || data.error || "Please try again."); }
+              })
+              .catch(function(e){ showErrorModal("Something went wrong", e.message); })
+              .then(function(){ $("x-sub-cancel").disabled = false; $("x-sub-cancel").textContent = "Cancel subscription"; });
+        }
+        $("x-sub-cancel").addEventListener("click", function(){
+            if (!gatewaySession) return;
+            showConfirmDialog(
+                "Cancel your subscription?",
+                "You'll keep your current balance until it expires, then need to buy again to continue.",
+                "Yes, cancel",
+                doCancelSubscription
+            );
+        });
+
+        // ---- Downloads: locked entries never get a real href in the DOM -- see the security
+        // note above renderDownloads(). The underlying CLI/Android files are still inherently
+        // public URLs; this stops the page itself handing them out, nothing more. --------------
+        // Picks the right CLI installer for the visitor's OS, falling back to the releases page
+        // (which lists every platform) when it can't tell -- e.g. Linux, or an unrecognized UA.
+        function osDownloadUrl(p){
+            var ua = navigator.userAgent || "";
+            var plat = navigator.platform || "";
+            if (p.win && /Win/i.test(plat)) return p.win;
+            if (p.macArm && /Mac/i.test(plat) && /ARM|Apple/i.test(ua)) return p.macArm;
+            if (p.macIntel && /Mac/i.test(plat)) return p.macIntel;
+            return p.url;
+        }
+        // SECURITY NOTE (2026-09-12): a locked product's real URL is never written into the DOM
+        // at all -- not even as a disabled/hidden href -- so "view source" or the elements panel
+        // can't lift it off an account that hasn't paid for it. This IS enforced client-side
+        // (fetched fresh into a closure variable, only rendered as a live href once `unlocked` is
+        // true against the just-verified /me response). Be honest about what this does and
+        // doesn't achieve: the CLI/Android files themselves are public GitHub Releases / Play
+        // Store URLs by nature -- no frontend gate can make an inherently public file secret from
+        // someone who already knows or finds that URL elsewhere. What this DOES stop is the
+        // account page itself handing a non-paying visitor the link on a plate. Real protection
+        // (a signed, entitlement-checked, single-use download URL minted server-side) would need
+        // a new gateway endpoint that doesn't exist today -- flagging that as real follow-up work,
+        // not something a frontend-only change can fully solve.
+        function renderDownloads(myApps){
+            myApps = myApps || [];
+            var signedIn = !!gatewaySession;
+            var codes = ["android", "cli", "expert-ai-agent", "expert-os", "pro", "pro-usb"];
+            var html = codes.map(function(code){
+                var p = CONFIG.PRODUCTS[code];
+                // One-time physical purchase -- not tier-gated, not part of the subscription
+                // ladder at all. Always shown as directly purchasable regardless of sign-in
+                // or plan.
+                if (p.oneTime){
+                    return '<div class="dl-card"><b>' + p.name + '</b><p>' + p.desc + '</p>'
+                        + '<span class="dl-unlocked">One-time purchase · see Gumroad for current price</span>'
+                        + '<a class="authbtn" href="' + p.url + '" target="_blank" rel="noopener">Order via Gumroad &rarr;</a></div>';
+                }
+                var unlockTier = -1;
+                for (var i = 0; i < CONFIG.appsByTier.length; i++){
+                    if (CONFIG.appsByTier[i].indexOf(code) !== -1){ unlockTier = i; break; }
+                }
+                var tierLabel = CONFIG.tiers[unlockTier] ? CONFIG.tiers[unlockTier].label : "a plan";
+                var unlocked = signedIn && myApps.indexOf(code) !== -1;
+                var lockTag, action;
+                if (unlocked && p.available){
+                    lockTag = '<span class="dl-unlocked">&#10003; Unlocked on your plan</span>';
+                    action = '<a class="authbtn" href="' + osDownloadUrl(p) + '" target="_blank" rel="noopener">Download</a>';
+                } else if (unlocked && !p.available){
+                    lockTag = '<span class="dl-unlocked">&#10003; Unlocked on your plan</span>';
+                    action = '<span class="dl-soon">Not yet publicly available: check <a href="https://ssv.asia/install/" target="_blank" rel="noopener">ssv.asia/install</a></span>';
+                } else if (!signedIn){
+                    lockTag = '<span class="dl-lock">Requires ' + tierLabel + ' or higher</span>';
+                    action = '<button class="dl-locked" type="button" data-scroll="x-signedout">Sign in to unlock</button>';
+                } else {
+                    lockTag = '<span class="dl-lock">Requires ' + tierLabel + ' or higher</span>';
+                    action = '<button class="dl-locked" type="button" data-scroll="x-plan-sec">Upgrade to unlock</button>';
+                }
+                return '<div class="dl-card"><b>' + p.name + '</b><p>' + p.desc + '</p>' + lockTag + action + '</div>';
+            }).join("");
+            $("x-downloads").innerHTML = html;
+            $("x-downloads").querySelectorAll(".dl-locked").forEach(function(btn){
+                btn.addEventListener("click", function(){
+                    var target = root.querySelector("#" + btn.getAttribute("data-scroll"));
+                    if (target) target.scrollIntoView({behavior: "smooth", block: "center"});
+                });
+            });
+        }
+
+        // ---- MCP: AEC vault connector (mirrors the standalone /mcp page, adapted to this
+        // console's existing bearer-token session instead of a separate email+uuid proof --
+        // verified against the LIVE handleMcpMe/handleMcpActivate, which now read the session
+        // token, not a client-supplied uuid like the older standalone page did). ---------------
+        var MCP_MIN_RS = 50, MCP_MAX_RS = 10000;
+        function mcpShow(kind){
+            $("x-mcp-preview").classList.toggle("hidden", kind !== "preview");
+            $("x-mcp-activate").classList.toggle("hidden", kind !== "activate");
+            $("x-mcp-dash").classList.toggle("hidden", kind !== "dash");
+            $("x-mcp-buy").classList.toggle("hidden", kind !== "buy");
+        }
+        function mcpRenderDash(o){
+            $("x-mcp-free").textContent = o.freeLeft != null ? o.freeLeft : "\u2014";
+            $("x-mcp-freetotal").textContent = o.freeDaily != null ? o.freeDaily : "10";
+            $("x-mcp-credits").textContent = o.credits != null ? o.credits : 0;
+            $("x-mcp-url").value = o.link || "";
+            mcpShow("dash");
+        }
+        function mcpMe(){
+            if (!gatewaySession) return;
+            fetch(CONFIG.gateway + "/mcp/me", {
+                method: "POST",
+                headers: {"Authorization": "Bearer " + gatewaySession}
+            }).then(function(r){ return r.json(); })
+              .then(function(o){
+                  if (o && o.ok && o.provisioned && o.link) mcpRenderDash(o);
+                  else mcpShow("activate");
+              })
+              .catch(function(){ mcpShow("activate"); });
+        }
+        $("x-mcp-create").addEventListener("click", function(){
+            if (!gatewaySession) return;
+            $("x-mcp-create").disabled = true;
+            $("x-mcp-amsg").className = "mcp-msg info"; $("x-mcp-amsg").textContent = "Creating your connector\u2026";
+            fetch(CONFIG.gateway + "/mcp/activate", {
+                method: "POST",
+                headers: {"Authorization": "Bearer " + gatewaySession}
+            }).then(function(r){ return r.json(); })
+              .then(function(o){
+                  if (o && o.ok && o.link) mcpRenderDash(o);
+                  else { $("x-mcp-create").disabled = false; $("x-mcp-amsg").className = "mcp-msg err"; $("x-mcp-amsg").textContent = "Couldn't verify your login \u2014 refresh and try again."; }
+              })
+              .catch(function(){ $("x-mcp-create").disabled = false; $("x-mcp-amsg").className = "mcp-msg err"; $("x-mcp-amsg").textContent = "Network error \u2014 try again."; });
+        });
+        $("x-mcp-copy").addEventListener("click", function(){
+            var el = $("x-mcp-url"), btn = $("x-mcp-copy");
+            (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject())
+                .catch(function(){ el.select(); document.execCommand("copy"); })
+                .then(function(){ btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = "Copy"; }, 1500); });
+        });
+        // Billing history: GET /pay/history?n=50 (gateway-confirmed live 2026-09-13), session
+        // bearer auth, same shape/auth as /pay/subscription/cancel. Returns every payment on THIS
+        // account (subscribe, buy-once, MCP credit top-ups), newest first. v1: just the most
+        // recent 20, no pagination -- shown once after sign-in, not re-fetched on every refreshMe.
+        function billingHistoryLoad(){
+            if (!gatewaySession) return;
+            fetch(CONFIG.gateway + "/pay/history?n=50", { headers: {"Authorization": "Bearer " + gatewaySession} })
+                .then(function(r){ return r.json(); })
+                .then(function(o){
+                    if (!o || !o.ok || !o.payments){
+                        $("x-billing-sec").classList.add("hidden");
+                        $("x-billing-panel").classList.add("hidden");
+                        return;
+                    }
+                    $("x-billing-sec").classList.remove("hidden");
+                    $("x-billing-panel").classList.remove("hidden");
+                    if (!o.payments.length){
+                        $("x-billing-list").innerHTML = '<p class="usage-note" style="margin:0">No payments yet.</p>';
+                        return;
+                    }
+                    var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+                    $("x-billing-list").innerHTML = o.payments.slice(0, 20).map(function(p){
+                        var tierCfg = (typeof p.tier === "number") ? CONFIG.tiers[p.tier] : null;
+                        var what = tierCfg ? tierCfg.label : (p.tier || "Purchase");
+                        var kindLabel = p.kind === "weekly" ? "Weekly subscription" : p.kind === "monthly" ? "Monthly subscription"
+                            : p.kind === "mcp_credits" ? "AEC credits top-up" : (p.kind || "One-time purchase");
+                        var amount = "₹" + Math.round((p.amountPaise || 0) / 100).toLocaleString("en-IN");
+                        // ts unit isn't documented here -- guard against both epoch-seconds and
+                        // epoch-ms rather than assume (a payment record misdated by 1970 vs. today
+                        // would be an obvious, embarrassing display bug to ship on a guess).
+                        var tsMs = p.ts ? (p.ts < 1e12 ? p.ts * 1000 : p.ts) : null;
+                        var d = tsMs ? new Date(tsMs) : null;
+                        var date = d ? (d.getDate() + " " + MONTHS[d.getMonth()] + " " + d.getFullYear()) : "—";
+                        var refundedTag = p.refunded ? '<span class="bill-refund-badge">Refunded</span>' : "";
+                        return '<div class="bill-row">'
+                            + '<div class="bill-info"><div class="bill-label">' + what + ' · ' + kindLabel + '</div>'
+                            + '<div class="bill-date">' + date + '</div>' + refundedTag + '</div>'
+                            + '<div class="bill-amt mono">' + amount + '</div>'
+                            + '</div>';
+                    }).join("");
+                })
+                .catch(function(){
+                    $("x-billing-sec").classList.add("hidden");
+                    $("x-billing-panel").classList.add("hidden");
+                });
+        }
+
+        $("x-mcp-topup-btn").addEventListener("click", function(){ mcpShow("buy"); });
+        $("x-refer-copy").addEventListener("click", function(){
+            var el = $("x-refer-url"), btn = $("x-refer-copy");
+            (navigator.clipboard ? navigator.clipboard.writeText(el.value) : Promise.reject())
+                .catch(function(){ el.select(); document.execCommand("copy"); })
+                .then(function(){ btn.textContent = "Copied"; setTimeout(function(){ btn.textContent = "Copy"; }, 1500); });
+        });
+        function mcpRupees(){ return Math.max(MCP_MIN_RS, Math.min(MCP_MAX_RS, parseInt($("x-mcp-amt").value || "0", 10) || 0)); }
+        $("x-mcp-presets").addEventListener("click", function(e){
+            var b = e.target.closest("button[data-rs]"); if (!b) return;
+            $("x-mcp-amt").value = b.getAttribute("data-rs");
+            root.querySelectorAll("#x-mcp-presets button").forEach(function(btn2){
+                btn2.classList.toggle("on", btn2.getAttribute("data-rs") === b.getAttribute("data-rs"));
+            });
+        });
+        function mcpPollProvision(orderId, tries){
+            if (tries > 20){
+                $("x-mcp-pay").disabled = false;
+                $("x-mcp-msg").className = "mcp-msg"; $("x-mcp-msg").textContent = "";
+                showErrorModal("Still processing", "Taking longer than usual \u2014 refresh in a minute, your credits are safe.");
+                return;
+            }
+            fetch(CONFIG.gateway + "/mcp/provision?order_id=" + encodeURIComponent(orderId))
+                .then(function(r){ return r.json(); })
+                .then(function(o){
+                    if (o && o.ok && o.paid && o.link){
+                        mcpRenderDash(o);
+                        $("x-mcp-pay").disabled = false;
+                        $("x-mcp-msg").className = "mcp-msg"; $("x-mcp-msg").textContent = "";
+                        showToast("Credits added to your balance.");
+                    }
+                    else setTimeout(function(){ mcpPollProvision(orderId, tries + 1); }, 3000);
+                })
+                .catch(function(){ setTimeout(function(){ mcpPollProvision(orderId, tries + 1); }, 3000); });
+        }
+        $("x-mcp-pay").addEventListener("click", function(){
+            if (!memberEmail || typeof Razorpay === "undefined") return;
+            var rs = mcpRupees();
+            $("x-mcp-pay").disabled = true;
+            // In-progress states stay as inline text (this is genuine multi-second progress, not a
+            // one-shot success/failure) -- only the failure paths below were migrated to the same
+            // showErrorModal system every other payment flow now uses, per the audit.
+            $("x-mcp-msg").className = "mcp-msg info"; $("x-mcp-msg").textContent = "Opening secure checkout\u2026";
+            fetch(CONFIG.gateway + "/pay/order", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({email: memberEmail, kind: "mcp_credits", rupees: rs})
+            }).then(function(r){ return r.json(); })
+              .then(function(o){
+                  if (!o.ok && !o.key_id) throw new Error(o.error || "Could not start payment.");
+                  var rzp = new Razorpay({
+                      key: o.key_id, order_id: o.order_id, amount: o.amount, currency: o.currency,
+                      name: "Expert AI", description: rs + " AEC queries",
+                      prefill: {email: memberEmail},
+                      theme: {color: "#a855f7"},
+                      handler: function(){ $("x-mcp-msg").className = "mcp-msg info"; $("x-mcp-msg").textContent = "Payment received \u2014 updating your balance\u2026"; mcpPollProvision(o.order_id, 0); },
+                      modal: { ondismiss: function(){
+                          $("x-mcp-pay").disabled = false;
+                          $("x-mcp-msg").className = "mcp-msg"; $("x-mcp-msg").textContent = "";
+                          showErrorModal("Checkout closed", "You can try again whenever you're ready.");
+                      } }
+                  });
+                  rzp.on("payment.failed", function(){
+                      $("x-mcp-pay").disabled = false;
+                      $("x-mcp-msg").className = "mcp-msg"; $("x-mcp-msg").textContent = "";
+                      showErrorModal("Payment failed", "No charge was made.");
+                  });
+                  rzp.open();
+              })
+              .catch(function(e){
+                  $("x-mcp-pay").disabled = false;
+                  $("x-mcp-msg").className = "mcp-msg"; $("x-mcp-msg").textContent = "";
+                  showErrorModal("Couldn't start payment", e.message || "Something went wrong.");
+              });
+        });
+
+        // ---- Memory: standing note injected into every chat (POST /memory/me + /memory/save,
+        // proof-of-login is {email,uuid} -- a DIFFERENT auth shape than the bearer-token
+        // endpoints elsewhere on this page, verified directly in readMemoryAuth() server-side). --
+        // MEM_MAX matches the gateway's own real limit (setMemory truncates/validates server-side
+        // at 4000 chars per "pricing ladder final.md" section 10) -- the textarea's maxlength is
+        // the same number so the browser can't even let you type past what the backend allows.
+        var MEM_MAX = 4000;
+        function memoryUpdateCount(){
+            var n = $("x-mem-text").value.length;
+            var el = $("x-mem-count");
+            el.textContent = n + " / " + MEM_MAX;
+            el.classList.toggle("near-limit", n >= MEM_MAX * 0.9);
+        }
+        $("x-mem-text").addEventListener("input", memoryUpdateCount);
+        function memoryLoad(){
+            if (!memberEmail || !memberUuid) return;
+            $("x-mem-status").textContent = "Loading\u2026";
+            fetch(CONFIG.gateway + "/memory/me", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({email: memberEmail, uuid: memberUuid})
+            }).then(function(r){ return r.json(); })
+              .then(function(o){
+                  if (o && o.ok){ $("x-mem-text").value = o.text || ""; $("x-mem-status").textContent = o.updated ? "Saved " + new Date(o.updated).toLocaleDateString() : ""; }
+                  else { $("x-mem-status").textContent = ""; }
+                  memoryUpdateCount();
+              })
+              .catch(function(){ $("x-mem-status").textContent = ""; });
+        }
+        $("x-mem-save").addEventListener("click", function(){
+            if (!memberEmail || !memberUuid){ $("x-mem-status").textContent = "Sign in to save memory."; return; }
+            $("x-mem-save").disabled = true;
+            $("x-mem-status").textContent = "Saving\u2026";
+            fetch(CONFIG.gateway + "/memory/save", {
+                method: "POST", headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({email: memberEmail, uuid: memberUuid, text: $("x-mem-text").value})
+            }).then(function(r){ return r.json(); })
+              .then(function(o){
+                  $("x-mem-save").disabled = false;
+                  $("x-mem-status").textContent = o && o.ok ? "Saved" : "Couldn't save \u2014 try again.";
+              })
+              .catch(function(){ $("x-mem-save").disabled = false; $("x-mem-status").textContent = "Network error."; });
+        });
+
+        // ---- Sign out / Refresh ----------------------------------------------------------
+        $("x-signout").addEventListener("click", function(){
+            store.del("session_token");
+            gatewaySession = null; memberEmail = null; memberUuid = null;
+            renderDownloads([]);
+            showSignedOut();
+        });
+        // POST /account/sign-out-everywhere -- bumps the account's server-side session_epoch,
+        // which invalidates every previously-issued bearer token (including this tab's own) on
+        // its next request. Local sign-out has to happen regardless of how the request comes
+        // back (network error, etc.) since this tab's own token is about to stop working anyway.
+        $("x-signout-all").addEventListener("click", function(){
+            if (!gatewaySession){ showSignedOut(); return; }
+            showConfirmDialog(
+                "Sign out of all devices?",
+                "This will sign you out on every device, including this one.",
+                "Yes, sign out everywhere",
+                function(){
+                    var token = gatewaySession;
+                    fetch(CONFIG.gateway + "/account/sign-out-everywhere", {
+                        method: "POST",
+                        headers: {"Authorization": "Bearer " + token}
+                    }).catch(function(){}).then(function(){
+                        store.del("session_token");
+                        gatewaySession = null; memberEmail = null; memberUuid = null;
+                        renderDownloads([]);
+                        showSignedOut();
+                        showToast("Signed out on every device.");
+                    });
+                }
+            );
+        });
+        // Shared by the header refresh icon and the "Refresh status" link inside a stuck
+        // subscription banner (e.g. a mandate stuck on "created") -- both just want the latest
+        // /me, nothing status-specific about the fetch itself.
+        function refreshMe(){
+            if (!gatewaySession) return Promise.resolve();
+            return fetch(CONFIG.gateway + "/me", { headers: {"Authorization": "Bearer " + gatewaySession} })
+                .then(function(r){
+                    // A 401 here means the session token itself is dead (expired/revoked) -- left
+                    // unchecked, the /me body wouldn't have real haiku/sonnet/luna fields and
+                    // showSignedIn's `s.haiku || {used:0,total:0}` fallback would silently render
+                    // a real-looking "0 of 0" balance, which reads as "I lost my tokens" to a
+                    // paying customer instead of "please sign in again."
+                    if (r.status === 401){
+                        showSignedOut("Your session expired — please sign in again.");
+                        throw new Error("session expired");
+                    }
+                    if (!r.ok) throw new Error("Server error (" + r.status + ") — please try again.");
+                    return r.json();
+                })
+                .then(function(me){ me.email = me.email || memberEmail; showSignedIn(me); renderDownloads(me.apps); return me; });
+        }
+        $("x-refresh").addEventListener("click", function(){
+            if (!gatewaySession) return;
+            $("x-refresh").classList.remove("spin"); void $("x-refresh").offsetWidth; $("x-refresh").classList.add("spin");
+            refreshMe().catch(function(e){
+                if (e && e.message !== "session expired") showToast("Couldn't refresh — check your connection and try again.");
+            });
+        });
+
+        // ---- Sign-in auto-detection (mirrors the AEC MCP embed) ----------
+        // Ghost exposes the signed-in member at /members/api/member/, same
+        // origin, cookie-based. If it resolves, the visitor is already
+        // signed in to ssv.asia and never needs the manual email box.
+        function detectMember(){
+            // A Google-issued token in the URL takes priority over the normal Ghost-cookie
+            // detection below: it's already a real, freshly-issued gateway session (the backend's
+            // ensure()+issueSession() already ran), and the visitor may not even be a recognized
+            // Ghost member on this browser (e.g. signed in with a Google account that's never
+            // touched the Ghost portal), so falling through to the member-cookie check would be
+            // wrong for this load.
+            if (googleTokenFromUrl){
+                gatewaySession = googleTokenFromUrl;
+                fetch(CONFIG.gateway + "/me", { headers: {"Authorization": "Bearer " + googleTokenFromUrl} })
+                    .then(function(r){ return r.json(); })
+                    .then(function(me){
+                        me.email = me.email || googleEmailFromUrl;
+                        memberEmail = me.email || memberEmail;
+                        showSignedIn(me);
+                        renderDownloads(me.apps);
+                        mcpMe();
+                        billingHistoryLoad();
+                    })
+                    .catch(function(){ showSignedOut(); });
+                return;
+            }
+            $("x-authbtn").textContent = "Checking\u2026";
+            // Keep the real portal link usable while Ghost member detection is in flight.
+            // A slow/blocked member endpoint must never leave the only sign-in control inert.
+            $("x-authbtn").href = PORTAL.signin;
+            fetch("/members/api/member/", { credentials: "include" })
+                .then(function(r){
+                    // Ghost returns 204 No Content for an anonymous visitor; that is a valid
+                    // signed-out result, not a JSON parse error.
+                    if (r.status === 204 || !r.ok) return null;
+                    return r.json();
+                })
+                .then(function(m){
+                    if (m && m.email){
+                        memberEmail = m.email.toLowerCase().trim();
+                        memberUuid = m.uuid || null;
+                        $("x-authbtn").textContent = "Verifying\u2026";
+                        // Member IS signed in to ssv.asia \u2014 a failure past this point
+                        // (gateway not provisioned for this email, device-flow timeout,
+                        // etc.) is a DIFFERENT problem than "not signed in", so it gets
+                        // its own handling instead of falling through to the generic
+                        // "please sign in" catch below.
+                        return establishSession(memberEmail, getPendingRef()).catch(function(err){
+                            showActivationNeeded(memberEmail, err && err.message);
+                        });
+                    }
+                    showSignedOut();
+                })
+                .catch(function(){
+                    // /members/api/member/ only exists on ssv.asia itself \u2014 if this
+                    // embed is loaded elsewhere, fall back to a cached gateway session.
+                    var token = store.get("session_token");
+                    if (token){
+                        gatewaySession = token;
+                        fetch(CONFIG.gateway + "/me", { headers: {"Authorization": "Bearer " + token} })
+                            .then(function(r){ return r.json(); })
+                            .then(function(me){ showSignedIn(me); billingHistoryLoad(); })
+                            .catch(function(){ showSignedOut(); });
+                    } else {
+                        showSignedOut();
+                    }
+                });
+        }
+
+        $("x-retry").addEventListener("click", function(){
+            if (!memberEmail) return;
+            $("x-retry").disabled = true;
+            $("x-activation-msg").textContent = "Trying again\u2026";
+            establishSession(memberEmail, getPendingRef())
+                .catch(function(err){ showActivationNeeded(memberEmail, err && err.message); })
+                .then(function(){ $("x-retry").disabled = false; });
+        });
+
+        // Static, tier-independent -- every tool in CONFIG.TOOLS is available to any signed-in
+        // tier-ladder holder regardless of plan (see "pricing ladder final.md" section 10: these
+        // are attached per-request by the gateway, not gated by which tier bought them).
+        function renderTools(){
+            var html = CONFIG.TOOLS.map(function(g){
+                var chips = g.items.map(function(it){
+                    return '<div class="tool-chip"><b>' + it.name + '</b><span>' + it.desc + '</span></div>';
+                }).join("");
+                return '<div class="tools-group"><div class="tools-group-label">' + g.group + '</div><div class="tools-grid">' + chips + '</div></div>';
+            }).join("");
+            $("x-tools-panel").innerHTML = html;
+        }
+
+        // Sync the toggle UI (kind buttons, currency select) to whatever was restored from
+        // localStorage above -- render() itself only updates the numbers, not these controls'
+        // visual on/off state, so a restored non-default kind/currency needs this explicit sync.
+        $("x-monthly").classList.toggle("on", kind==="monthly");
+        $("x-weekly").classList.toggle("on", kind==="weekly");
+        $("x-monthly").setAttribute("aria-pressed", kind==="monthly");
+        $("x-weekly").setAttribute("aria-pressed", kind==="weekly");
+        $("x-cur-select").value = cur;
+
+        render();
+        renderTools();
+        renderDownloads([]);
+        preloadAvatars();
+        detectMember();
+        checkPendingOneTimePurchase();
+    })();
+</script>
+
+<!--kg-card-end: html-->
+
+
+<!--kg-card-end: html-->

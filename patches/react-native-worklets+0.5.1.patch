@@ -1,0 +1,14 @@
+diff --git a/node_modules/react-native-worklets/android/CMakeLists.txt b/node_modules/react-native-worklets/android/CMakeLists.txt
+index 1d949d6..17224ee 100644
+--- a/node_modules/react-native-worklets/android/CMakeLists.txt
++++ b/node_modules/react-native-worklets/android/CMakeLists.txt
+@@ -1,4 +1,9 @@
+ project(Worklets)
++
++# NDK r27b regression on Windows: the toolchain file no longer implicitly
++# links libc++_shared, causing "undefined symbol" for every std:: symbol.
++# See github.com/android/games-samples/issues/82 — force it explicitly.
++link_libraries(c++)
+ cmake_minimum_required(VERSION 3.8)
+ 
+ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)

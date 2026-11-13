@@ -1,0 +1,147 @@
+{
+  "expo": {
+    "name": "Expert AI",
+    "slug": "expert-ai",
+    "version": "1.5.3",
+    "orientation": "default",
+    "icon": "./assets/images/icon.png",
+    "scheme": "expertai",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "associatedDomains": ["applinks:ssv.asia"]
+    },
+    "android": {
+      "package": "com.ssvasia.expertai",
+      "versionCode": 57,
+      "intentFilters": [
+        {
+          "action": "VIEW",
+          "autoVerify": true,
+          "data": [
+            {
+              "scheme": "https",
+              "host": "ssv.asia",
+              "pathPrefix": "/app-auth/callback"
+            }
+          ],
+          "category": ["BROWSABLE", "DEFAULT"]
+        }
+      ],
+      "adaptiveIcon": {
+        "backgroundColor": "#3D1A66",
+        "foregroundImage": "./assets/images/android-icon-foreground.png",
+        "backgroundImage": "./assets/images/android-icon-background.png",
+        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+      },
+      "edgeToEdgeEnabled": true,
+      "predictiveBackGestureEnabled": false,
+      "softwareKeyboardLayoutMode": "pan",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS",
+        "android.permission.POST_NOTIFICATIONS"
+      ]
+    },
+    "web": {
+      "output": "static",
+      "favicon": "./assets/images/favicon.png",
+      "name": "Expert AI Terminal"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 200,
+          "resizeMode": "contain",
+          "backgroundColor": "#3D1A66",
+          "dark": {
+            "backgroundColor": "#000000"
+          }
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Expert AI Chat to use your camera to scan server QR codes."
+        }
+      ],
+      "expo-font",
+      "expo-secure-store",
+      "expo-audio",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/images/android-icon-monochrome.png",
+          "color": "#3D1A66"
+        }
+      ],
+      [
+        "@sentry/react-native/expo",
+        {
+          "organization": "ssvasia",
+          "project": "react-native",
+          "url": "https://sentry.io/"
+        }
+      ],
+      [
+        "expo-share-intent",
+        {
+          "androidIntentFilters": [
+            "text/*"
+          ],
+          "disableIOS": true
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "android": {
+            "targetSdkVersion": 36,
+            "compileSdkVersion": 36,
+            "enableMinifyInReleaseBuilds": true,
+            "enableShrinkResourcesInReleaseBuilds": true,
+            "enablePngCrunchInReleaseBuilds": true
+          }
+        }
+      ],
+      "./plugins/withAndroidAutoBackup.js",
+      "./plugins/withFoldableConfigChanges.js",
+      "./plugins/withAndroidKeyboard.js",
+      "./plugins/withAndroidStaticShortcuts.js",
+      "./plugins/withAndroidBilling.js",
+      "@react-native-google-signin/google-signin",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Allow Expert AI to use Face ID to unlock the app."
+        }
+      ],
+      [
+        "expo-speech-recognition",
+        {
+          "microphonePermission": "Allow Expert AI to use the microphone to turn your speech into a chat message.",
+          "speechRecognitionPermission": "Allow Expert AI to use speech recognition to turn your speech into a chat message."
+        }
+      ]
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "d4ca480b-2d64-4e54-aa5c-dba69f13d0b6"
+      }
+    },
+    "updates": {
+      "enabled": false
+    },
+    "owner": "ssv.asia"
+  }
+}

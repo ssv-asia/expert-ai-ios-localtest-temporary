@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native-safe-area-context/android/src/main/jni/CMakeLists.txt b/node_modules/react-native-safe-area-context/android/src/main/jni/CMakeLists.txt
+index 52450f0..02847c2 100644
+--- a/node_modules/react-native-safe-area-context/android/src/main/jni/CMakeLists.txt
++++ b/node_modules/react-native-safe-area-context/android/src/main/jni/CMakeLists.txt
+@@ -1,5 +1,8 @@
+ cmake_minimum_required(VERSION 3.13)
+ set(CMAKE_VERBOSE_MAKEFILE ON)
++# NDK r27b regression on Windows: the toolchain no longer implicitly links
++# libc++_shared, causing "undefined symbol" for every std:: symbol.
++link_libraries(c++)
+ 
+ set(LIB_LITERAL safeareacontext)
+ set(LIB_TARGET_NAME react_codegen_${LIB_LITERAL})

@@ -1,0 +1,10 @@
+diff --git a/node_modules/@shopify/react-native-skia/android/CMakeLists.txt b/node_modules/@shopify/react-native-skia/android/CMakeLists.txt
+index 1e6014e..8d26ded 100644
+--- a/node_modules/@shopify/react-native-skia/android/CMakeLists.txt
++++ b/node_modules/@shopify/react-native-skia/android/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ project(RNSkia)
++link_libraries(c++)
+ cmake_minimum_required(VERSION 3.4.1)
+ 
+ set (CMAKE_VERBOSE_MAKEFILE ON)

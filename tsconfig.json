@@ -1,0 +1,24 @@
+{
+  "extends": "expo/tsconfig.base",
+  "compilerOptions": {
+    "strict": true,
+    "paths": {
+      "@/*": [
+        "./*"
+      ]
+    }
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.tsx",
+    ".expo/types/**/*.ts",
+    "expo-env.d.ts"
+  ],
+  "exclude": [
+    "packages/react-native-marked/examples",
+    "packages/react-native-marked/dangerfile.ts",
+    "packages/react-native-marked/src/lib/__tests__",
+    "packages/react-native-marked/src/lib/__perf__",
+    "packages/pi-client/assemblyscript"
+  ]
+}

@@ -1,0 +1,20 @@
+diff --git a/node_modules/expo-modules-core/android/CMakeLists.txt b/node_modules/expo-modules-core/android/CMakeLists.txt
+index 5d309ef..be89b50 100644
+--- a/node_modules/expo-modules-core/android/CMakeLists.txt
++++ b/node_modules/expo-modules-core/android/CMakeLists.txt
+@@ -1,6 +1,7 @@
+ cmake_minimum_required(VERSION 3.16)
+
+ project(expo-modules-core)
++link_libraries(c++)
+
+ set(CMAKE_VERBOSE_MAKEFILE ON)
+ set(CMAKE_CXX_STANDARD 20)
+@@ -128,6 +129,7 @@ target_link_libraries(
+   android
+   ${JSEXECUTOR_LIB}
+   ${NEW_ARCHITECTURE_DEPENDENCIES}
++  c++
+ )
+
+

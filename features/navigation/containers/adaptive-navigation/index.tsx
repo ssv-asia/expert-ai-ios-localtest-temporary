@@ -1,0 +1,515 @@
+import {
+  ReactNode,
+  useRef,
+  useState,
+  useCallback,
+  useEffect,
+} from "react";
+import {
+  Animated,
+  Platform,
+  StyleSheet,
+  View,
+} from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
+import { SafeAreaView } from "react-native-safe-area-context";
+import { usePathname, useRouter } from "expo-router";
+
+import { Colors } from "@/constants/theme";
+import { useColorScheme } from "@/hooks/use-color-scheme";
+import { useResponsiveLayout } from "../../hooks/use-responsive-layout";
+import { NavigationRail } from "../../components/navigation-rail";
+import { HeaderBar } from "../../components/header-bar";
+import { MobileHeaderBar } from "../../components/mobile-header-bar";
+import { WorkspaceSheet } from "../../components/workspace-sheet";
+import { MobileChangesSheet } from "../../components/mobile-changes-sheet";
+import { MobileFilesSheet } from "../../components/mobile-files-sheet";
+import { MobilePreviewSheet } from "../../components/mobile-preview-sheet";
+import { SessionSidebar } from "@/features/workspace/components/session-sidebar";
+import { useAuthStore } from "@/features/auth/store";
+import { useWorkspaceStore } from "@/features/workspace/store";
+import { useAppMode } from "@/hooks/use-app-mode";
+import { AppModeToggle } from "../../components/app-mode-toggle";
+import { useDesktopStore } from "@/features/desktop/store";
+import { ChatSidebar } from "@/features/chat/components/chat-sidebar";
+import { ChatSheet } from "@/features/chat/components/chat-sheet";
+import { useChatStore } from "@/features/chat/store";
+import { ConnectionStatusBanner } from "@/features/agent/components/connection-status-banner";
+import { TasksSheet } from "@/features/tasks/components/tasks-sheet";
+import { TaskOutputSheet } from "@/features/tasks/components/task-output-sheet";
+import { TaskOutputPanel } from "@/features/tasks/components/task-output-panel";
+
+const SIDEBAR_DEFAULT = 280;
+const RAIL_WIDTH = 64;
+
+type SidebarMode = "persistent" | "hover";
+
+interface AdaptiveNavigationProps {
+  children: ReactNode;
+}
+
+export function AdaptiveNavigation({ children }: AdaptiveNavigationProps) {
+  const { isWideScreen } = useResponsiveLayout();
+  const colorScheme = useColorScheme() ?? "light";
+  const colors = Colors[colorScheme];
+  const activeServerId = useAuthStore((s) => s.activeServerId);
+  const hasServer = !!activeServerId;
+  const hasWorkspaces = useWorkspaceStore((s) => s.workspaces.length > 0);
+  const appMode = useAppMode();
+  const isCodeMode = appMode === "code";
+  const isChatMode = appMode === "chat";
+  const isDesktopMode = appMode === "desktop";
+  const desktopImmersive = useDesktopStore((s) => s.immersive);
+  const showSessions = hasServer && hasWorkspaces;
+  const [sheetVisible, setSheetVisible] = useState(false);
+  const [changesSheetVisible, setChangesSheetVisible] = useState(false);
+  const [filesSheetVisible, setFilesSheetVisible] = useState(false);
+  const [previewSheetVisible, setPreviewSheetVisible] = useState(false);
+  const [chatSheetVisible, setChatSheetVisible] = useState(false);
+  const [tasksSheetVisible, setTasksSheetVisible] = useState(false);
+  const [taskOutputSheetVisible, setTaskOutputSheetVisible] = useState(false);
+  const [sidebarMode, setSidebarMode] = useState<SidebarMode>("persistent");
+  const [hoverVisible, setHoverVisible] = useState(false);
+  const [showPersistentSidebar, setShowPersistentSidebar] = useState(true);
+  const [sidebarWidth] = useState(SIDEBAR_DEFAULT);
+
+  const isDark = colorScheme === "dark";
+  const contentBorder = isDark ? "#3b3a39" : "rgba(0,0,0,0.12)";
+  const overlayBg = isDark ? "rgba(0,0,0,0.3)" : "rgba(0,0,0,0.08)";
+
+  const persistentAnim = useRef(new Animated.Value(1)).current;
+  const hoverAnim = useRef(new Animated.Value(0)).current;
+  const codeModeAnim = useRef(new Animated.Value(isCodeMode ? 1 : 0)).current;
+  const [railMounted, setRailMounted] = useState(isCodeMode);
+  const chatSidebarAnim = useRef(new Animated.Value(0)).current;
+  const [chatSidebarMounted, setChatSidebarMounted] = useState(false);
+  const chatSidebarVisible = useChatStore((s) => s.sidebarVisible);
+  const setChatSidebarVisible = useChatStore((s) => s.setSidebarVisible);
+
+  const isPersistent = sidebarMode === "persistent";
+
+  useEffect(() => {
+    if (isCodeMode) {
+      setRailMounted(true);
+    }
+    Animated.spring(codeModeAnim, {
+      toValue: isCodeMode ? 1 : 0,
+      tension: 200,
+      friction: 24,
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished && !isCodeMode) {
+        setRailMounted(false);
+      }
+    });
+  }, [isCodeMode, codeModeAnim]);
+
+  useEffect(() => {
+    const shouldShow = isChatMode && chatSidebarVisible;
+    if (shouldShow) {
+      setChatSidebarMounted(true);
+    }
+    Animated.spring(chatSidebarAnim, {
+      toValue: shouldShow ? 1 : 0,
+      tension: 200,
+      friction: 24,
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished && !shouldShow) {
+        setChatSidebarMounted(false);
+      }
+    });
+  }, [isChatMode, chatSidebarVisible, chatSidebarAnim]);
+
+  useEffect(() => {
+    if (isPersistent) {
+      setShowPersistentSidebar(true);
+    }
+    Animated.spring(persistentAnim, {
+      toValue: isPersistent ? 1 : 0,
+      tension: 180,
+      friction: 22,
+      useNativeDriver: false,
+    }).start(({ finished }) => {
+      if (finished && !isPersistent) {
+        setShowPersistentSidebar(false);
+      }
+    });
+  }, [isPersistent, persistentAnim]);
+
+  useEffect(() => {
+    Animated.spring(hoverAnim, {
+      toValue: hoverVisible && !isPersistent ? 1 : 0,
+      tension: 200,
+      friction: 24,
+      useNativeDriver: true,
+    }).start();
+  }, [hoverAnim, hoverVisible, isPersistent]);
+
+  const handleToggleSidebar = useCallback(() => {
+    setSidebarMode((prev) => (prev === "persistent" ? "hover" : "persistent"));
+    setHoverVisible(false);
+  }, []);
+
+  const handleToggleChatSidebar = useCallback(() => {
+    setChatSidebarVisible(!chatSidebarVisible);
+  }, [chatSidebarVisible, setChatSidebarVisible]);
+
+  const handleRailHoverIn = useCallback(() => {
+    if (!isPersistent) setHoverVisible(true);
+  }, [isPersistent]);
+
+  const handleRailHoverOut = useCallback(() => {
+    if (!isPersistent) setHoverVisible(false);
+  }, [isPersistent]);
+
+  const handleSidebarHoverIn = useCallback(() => {
+    if (!isPersistent) setHoverVisible(true);
+  }, [isPersistent]);
+
+  const handleSidebarHoverOut = useCallback(() => {
+    if (!isPersistent) setHoverVisible(false);
+  }, [isPersistent]);
+
+  const router = useRouter();
+  const pathname = usePathname();
+  const chatSelectSession = useChatStore((s) => s.selectSession);
+  const mobilePreviewSessionMatch = pathname.match(/^\/workspace\/[^/]+\/s\/([^/]+)$/);
+  const mobilePreviewSessionId = mobilePreviewSessionMatch?.[1] ?? null;
+
+  const handleChatNewSession = useCallback(() => {
+    chatSelectSession(null);
+    router.replace('/chat');
+  }, [chatSelectSession, router]);
+
+  const handleChatSelectSession = useCallback(
+    (sessionId: string, _filePath: string) => {
+      chatSelectSession(sessionId);
+      router.replace({ pathname: '/chat/[sessionId]', params: { sessionId } });
+    },
+    [chatSelectSession, router],
+  );
+
+  if (isWideScreen) {
+    const animatedRailWidth = codeModeAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, RAIL_WIDTH],
+    });
+
+    const animatedSidebarWidth = Animated.multiply(
+      persistentAnim,
+      Animated.multiply(codeModeAnim, sidebarWidth),
+    );
+
+    const contentBorderWidth = codeModeAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [0, 0.633],
+    });
+
+    const contentBorderRadius = Animated.multiply(
+      persistentAnim.interpolate({
+        inputRange: [0, 1],
+        outputRange: [12, 0],
+      }),
+      codeModeAnim,
+    );
+
+    const hoverTranslateX = hoverAnim.interpolate({
+      inputRange: [0, 1],
+      outputRange: [-sidebarWidth, 0],
+    });
+
+    const webHoverProps =
+      Platform.OS === "web"
+        ? { onMouseEnter: handleRailHoverIn, onMouseLeave: handleRailHoverOut }
+        : {};
+
+    const webSidebarHoverProps =
+      Platform.OS === "web"
+        ? {
+            onMouseEnter: handleSidebarHoverIn,
+            onMouseLeave: handleSidebarHoverOut,
+          }
+        : {};
+
+    return (
+      <SafeAreaView
+        style={[styles.wideContainer, { backgroundColor: isDesktopMode && desktopImmersive ? '#000' : colors.background }]}
+        edges={isDesktopMode && desktopImmersive ? [] : ["top"]}
+      >
+        {!(isDesktopMode && desktopImmersive) && (
+          <View
+            style={[
+              styles.modeToggleRow,
+              { backgroundColor: isDark ? "#1a1a1a" : "#F5F4F1" },
+            ]}
+          >
+            <AppModeToggle />
+          </View>
+        )}
+        {hasServer && !isDesktopMode ? (
+          <HeaderBar
+            onToggleSidebar={handleToggleSidebar}
+            onToggleChatSidebar={handleToggleChatSidebar}
+            sidebarVisible={isPersistent}
+          />
+        ) : (
+          <View style={{ height: 0 }} />
+        )}
+        <View style={styles.bodyRow}>
+          {hasServer && railMounted && (
+            <Animated.View
+              style={{
+                width: animatedRailWidth,
+                overflow: "hidden",
+                height: "100%",
+              }}
+              {...webHoverProps}
+            >
+              <View style={{ width: RAIL_WIDTH, height: "100%" }}>
+                <NavigationRail />
+              </View>
+            </Animated.View>
+          )}
+
+          {showSessions && showPersistentSidebar && railMounted && (
+            <Animated.View
+              style={{
+                width: animatedSidebarWidth,
+                overflow: "hidden",
+                height: "100%",
+              }}
+            >
+              <View
+                style={{ width: sidebarWidth, flex: 1 }}
+              >
+                <SessionSidebar />
+              </View>
+            </Animated.View>
+          )}
+
+          {chatSidebarMounted && (
+            <Animated.View
+              style={{
+                width: chatSidebarAnim.interpolate({
+                  inputRange: [0, 1],
+                  outputRange: [0, SIDEBAR_DEFAULT],
+                }),
+                overflow: "hidden",
+                height: "100%",
+              }}
+            >
+              <View style={{ width: SIDEBAR_DEFAULT, height: "100%" }}>
+                <ChatSidebar
+                  onNewSession={handleChatNewSession}
+                  onSelectSession={handleChatSelectSession}
+                />
+              </View>
+            </Animated.View>
+          )}
+
+          <Animated.View
+            style={[
+              styles.content,
+              hasServer && isCodeMode
+                ? {
+                    borderLeftWidth: contentBorderWidth,
+                    borderTopWidth: contentBorderWidth,
+                    borderLeftColor: contentBorder,
+                    borderTopColor: contentBorder,
+                    borderTopLeftRadius: contentBorderRadius,
+                  }
+                : chatSidebarMounted
+                  ? {
+                      borderLeftWidth: chatSidebarAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, 0.633],
+                      }),
+                      borderTopWidth: chatSidebarAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, 0.633],
+                      }),
+                      borderLeftColor: contentBorder,
+                      borderTopColor: contentBorder,
+                      borderTopLeftRadius: chatSidebarAnim.interpolate({
+                        inputRange: [0, 1],
+                        outputRange: [0, 12],
+                      }),
+                    }
+                  : {},
+            ]}
+          >
+            <View style={styles.contentInner}>
+              {children}
+            </View>
+
+            {isCodeMode && <TaskOutputPanel />}
+
+            {showSessions && !isPersistent && isCodeMode && (
+              <>
+                <Animated.View
+                  style={[
+                    styles.overlay,
+                    {
+                      backgroundColor: overlayBg,
+                      opacity: hoverAnim,
+                      pointerEvents: hoverVisible ? "auto" : "none",
+                    },
+                  ]}
+                />
+                <Animated.View
+                  {...webSidebarHoverProps}
+                  style={[
+                    styles.hoverSidebar,
+                    {
+                      transform: [{ translateX: hoverTranslateX }],
+                    },
+                  ]}
+                >
+                  <SessionSidebar />
+                </Animated.View>
+              </>
+            )}
+          </Animated.View>
+        </View>
+        {hasServer && <ConnectionStatusBanner />}
+      </SafeAreaView>
+    );
+  }
+
+  return (
+    <GestureHandlerRootView
+      style={[styles.narrowContainer, { backgroundColor: colors.background }]}
+    >
+      <SafeAreaView
+        style={[styles.narrowSafeArea, { backgroundColor: isDesktopMode && desktopImmersive ? '#000' : colors.background }]}
+        edges={isDesktopMode && desktopImmersive ? [] : ["top"]}
+      >
+        {!(isDesktopMode && desktopImmersive) && (
+          <View
+            style={[
+              styles.modeToggleRow,
+              { backgroundColor: isDark ? "#1a1a1a" : "#F5F4F1" },
+            ]}
+          >
+            <AppModeToggle />
+          </View>
+        )}
+        {hasServer && !isDesktopMode && (
+          <MobileHeaderBar
+            onWorkspacePress={() => setSheetVisible(true)}
+            onFilesPress={() => {
+              setChangesSheetVisible(false);
+              setPreviewSheetVisible(false);
+              setFilesSheetVisible(true);
+            }}
+            onGitPress={() => {
+              setFilesSheetVisible(false);
+              setPreviewSheetVisible(false);
+              setChangesSheetVisible(true);
+            }}
+            onPreviewPress={() => {
+              setChangesSheetVisible(false);
+              setPreviewSheetVisible(true);
+            }}
+            onChatSessionsPress={() => setChatSheetVisible(true)}
+            onTasksPress={() => setTasksSheetVisible(true)}
+            onTaskOutputPress={() => setTaskOutputSheetVisible(true)}
+          />
+        )}
+        <View style={styles.mobileContent}>
+          {children}
+        </View>
+        {hasServer && <ConnectionStatusBanner />}
+      </SafeAreaView>
+      {hasServer && isCodeMode && (
+        <>
+          <WorkspaceSheet
+            visible={sheetVisible}
+            onClose={() => setSheetVisible(false)}
+          />
+          {hasWorkspaces && (
+            <>
+              <MobileChangesSheet
+                visible={changesSheetVisible}
+                onClose={() => setChangesSheetVisible(false)}
+              />
+              <MobilePreviewSheet
+                visible={previewSheetVisible}
+                onClose={() => setPreviewSheetVisible(false)}
+                sessionId={mobilePreviewSessionId}
+              />
+            </>
+          )}
+        </>
+      )}
+      {isCodeMode && (
+        <>
+          <TasksSheet
+            visible={tasksSheetVisible}
+            onClose={() => setTasksSheetVisible(false)}
+          />
+          <TaskOutputSheet
+            visible={taskOutputSheetVisible}
+            onClose={() => setTaskOutputSheetVisible(false)}
+          />
+        </>
+      )}
+      {isChatMode && (
+        <ChatSheet
+          visible={chatSheetVisible}
+          onClose={() => setChatSheetVisible(false)}
+        />
+      )}
+      {hasServer && (
+        <MobileFilesSheet
+          visible={filesSheetVisible}
+          onClose={() => setFilesSheetVisible(false)}
+        />
+      )}
+    </GestureHandlerRootView>
+  );
+}
+
+const styles = StyleSheet.create({
+  wideContainer: {
+    flex: 1,
+  },
+  modeToggleRow: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+  bodyRow: {
+    flex: 1,
+    flexDirection: "row",
+  },
+  narrowContainer: {
+    flex: 1,
+  },
+  narrowSafeArea: {
+    flex: 1,
+  },
+  content: {
+    flex: 1,
+    overflow: "hidden",
+  },
+  contentInner: {
+    flex: 1,
+  },
+  mobileContent: {
+    flex: 1,
+  },
+
+  overlay: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 10,
+  },
+  hoverSidebar: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    bottom: 0,
+    width: SIDEBAR_DEFAULT,
+    zIndex: 11,
+  },
+});

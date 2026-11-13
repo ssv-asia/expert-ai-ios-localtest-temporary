@@ -1,0 +1,12 @@
+diff --git a/node_modules/react-native/ReactAndroid/cmake-utils/ReactNative-application.cmake b/node_modules/react-native/ReactAndroid/cmake-utils/ReactNative-application.cmake
+index 0000000..0000000 100644
+--- a/node_modules/react-native/ReactAndroid/cmake-utils/ReactNative-application.cmake
++++ b/node_modules/react-native/ReactAndroid/cmake-utils/ReactNative-application.cmake
+@@ -87,4 +87,7 @@
+ # We use an interface target to propagate flags to all the generated targets
+ # such as the folly flags or others.
+ add_library(common_flags INTERFACE)
+ target_compile_options(common_flags INTERFACE ${folly_FLAGS})
++# NDK r27b regression on Windows: the toolchain file no longer implicitly
++# links libc++_shared, causing "undefined symbol" for every std:: symbol.
++target_link_libraries(common_flags INTERFACE c++)

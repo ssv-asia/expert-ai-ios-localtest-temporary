@@ -1,0 +1,362 @@
+﻿import { useCallback, useMemo, useState } from 'react';
+import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
+import {
+  Ellipsis,
+  ExternalLink,
+  FolderOpen,
+  GitBranch,
+  Github,
+  Gitlab,
+  Globe,
+  PanelLeft,
+  Play,
+  SquarePen,
+} from 'lucide-react-native';
+import { usePathname, useRouter } from 'expo-router';
+
+import { Colors, Fonts } from '@/constants/theme';
+import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useAppMode } from '@/hooks/use-app-mode';
+import { useWorkspaceStore } from '@/features/workspace/store';
+import { useChatStore } from '@/features/chat/store';
+import { useGitStatus, useNestedRepos } from '@expertai/client';
+import { remotesToLinks, type RemoteLink } from '@/features/workspace/utils/git-remote-url';
+import { usePreviewStore } from '@/features/preview/store';
+import { useTasksStore } from '@/features/tasks/store';
+import {
+  MobileHeaderActionsSheet,
+  type MobileHeaderActionItem,
+} from '@/features/navigation/components/mobile-header-actions-sheet';
+
+const EMPTY_TARGETS: never[] = [];
+
+interface MobileHeaderBarProps {
+  onWorkspacePress: () => void;
+  onGitPress: () => void;
+  onFilesPress?: () => void;
+  onPreviewPress?: () => void;
+  onChatSessionsPress?: () => void;
+  onTasksPress?: () => void;
+  onTaskOutputPress?: () => void;
+}
+
+export function MobileHeaderBar({
+  onWorkspacePress,
+  onGitPress,
+  onFilesPress,
+  onPreviewPress,
+  onChatSessionsPress,
+  onTasksPress,
+  onTaskOutputPress,
+}: MobileHeaderBarProps) {
+  const colorScheme = useColorScheme() ?? 'light';
+  const colors = Colors[colorScheme];
+  const isDark = colorScheme === 'dark';
+  const appMode = useAppMode();
+  const router = useRouter();
+  const pathname = usePathname();
+  const selectChatSession = useChatStore((s) => s.selectSession);
+  const hasTaskConfig = useTasksStore((s) => s.hasConfig);
+  const taskInstances = useTasksStore((s) => s.instances);
+  const selectedTaskId = useTasksStore((s) => s.selectedTaskId);
+  const [moreVisible, setMoreVisible] = useState(false);
+
+  const sessionMatch = pathname.match(/^\/workspace\/[^/]+\/s\/([^/]+)$/);
+  const currentSessionId = sessionMatch?.[1] ?? null;
+  const previewTargets = usePreviewStore((state) =>
+    currentSessionId ? state.targetsBySession[currentSessionId] ?? EMPTY_TARGETS : EMPTY_TARGETS
+  );
+
+  const workspace = useWorkspaceStore((s) =>
+    s.workspaces.find((w) => w.id === s.selectedWorkspaceId)
+  );
+
+  const cwd = appMode === 'code' ? workspace?.path ?? null : null;
+  const { data: gitData } = useGitStatus(cwd);
+  const { repos: nestedRepos } = useNestedRepos(cwd);
+
+  const allLinks: (RemoteLink & { repoPath?: string })[] = [];
+  const rootLinks = remotesToLinks(gitData?.remotes);
+  for (const link of rootLinks) {
+    allLinks.push(link);
+  }
+  if (nestedRepos) {
+    for (const repo of nestedRepos) {
+      const links = remotesToLinks(repo.remotes);
+      for (const link of links) {
+        allLinks.push({ ...link, repoPath: repo.path });
+      }
+    }
+  }
+  const firstLink = allLinks.length > 0 ? allLinks[0] : null;
+
+  const textPrimary = isDark ? '#fefdfd' : colors.text;
+  const borderColor = isDark ? '#323131' : 'rgba(0,0,0,0.08)';
+  const buttonBg = isDark ? '#2F2D2C' : '#F7F4EE';
+  const hasPreview = appMode === 'code' && !!currentSessionId && previewTargets.length > 0;
+  const hasTasks = appMode === 'code' && (hasTaskConfig || taskInstances.length > 0);
+  const hasTaskOutput = appMode === 'code' && (!!selectedTaskId || taskInstances.length > 0);
+
+  const handleNewChatPress = () => {
+    selectChatSession(null);
+    router.replace('/chat');
+  };
+
+  const closeMore = useCallback(() => setMoreVisible(false), []);
+
+  const actionItems = useMemo<MobileHeaderActionItem[]>(() => {
+    if (appMode !== 'code') {
+      return [];
+    }
+
+    const items: MobileHeaderActionItem[] = [
+      {
+        key: 'git',
+        label: 'Git changes',
+        icon: <GitBranch size={18} color={textPrimary} strokeWidth={1.8} />,
+        onPress: () => {
+          closeMore();
+          onGitPress();
+        },
+      },
+    ];
+
+    if (hasPreview && onPreviewPress) {
+      items.push({
+        key: 'preview',
+        label: 'Preview',
+        icon: <Globe size={18} color={textPrimary} strokeWidth={1.8} />,
+        onPress: () => {
+          closeMore();
+          onPreviewPress();
+        },
+      });
+    }
+
+    if (hasTasks && onTasksPress) {
+      items.push({
+        key: 'tasks',
+        label: 'Tasks',
+        icon: <Play size={18} color={textPrimary} strokeWidth={1.8} />,
+        onPress: () => {
+          closeMore();
+          onTasksPress();
+        },
+      });
+    }
+
+    if (hasTaskOutput && onTaskOutputPress) {
+      items.push({
+        key: 'task-output',
+        label: 'Task output',
+        icon: <Play size={18} color={textPrimary} strokeWidth={1.8} />,
+        onPress: () => {
+          closeMore();
+          onTaskOutputPress();
+        },
+      });
+    }
+
+    if (firstLink) {
+      items.push({
+        key: 'remote',
+        label: `Open in ${firstLink.label}`,
+        icon:
+          firstLink.host === 'github' ? (
+            <Github size={18} color={textPrimary} strokeWidth={1.8} />
+          ) : firstLink.host === 'gitlab' ? (
+            <Gitlab size={18} color={textPrimary} strokeWidth={1.8} />
+          ) : (
+            <ExternalLink size={18} color={textPrimary} strokeWidth={1.8} />
+          ),
+        onPress: () => {
+          closeMore();
+          void Linking.openURL(firstLink.browserUrl);
+        },
+      });
+    }
+
+    return items;
+  }, [
+    appMode,
+    closeMore,
+    firstLink,
+    hasPreview,
+    hasTaskOutput,
+    hasTasks,
+    onGitPress,
+    onPreviewPress,
+    onTaskOutputPress,
+    onTasksPress,
+    textPrimary,
+  ]);
+
+  return (
+    <>
+      <View
+        style={[
+          styles.container,
+          {
+            backgroundColor: colors.background,
+            borderBottomColor: borderColor,
+          },
+        ]}
+      >
+        <View style={styles.leftSection}>
+          {appMode === 'chat' && (
+            <Pressable
+              onPress={onChatSessionsPress}
+              style={({ pressed }) => [
+                styles.menuButton,
+                { backgroundColor: buttonBg },
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Open chat sessions"
+            >
+              <PanelLeft size={16} color={textPrimary} strokeWidth={1.8} />
+            </Pressable>
+          )}
+
+          <Pressable
+            onPress={appMode === 'code' ? onWorkspacePress : onChatSessionsPress}
+            style={({ pressed }) => [styles.workspaceButton, pressed && { opacity: 0.7 }]}
+            accessibilityRole="button"
+            accessibilityLabel={appMode === 'chat' ? 'Open chat sessions' : 'Open workspace switcher'}
+          >
+            {appMode === 'code' && workspace && (
+              <View style={[styles.avatar, { backgroundColor: workspace.color }]}>
+                <Text style={styles.avatarInitial}>
+                  {workspace.title.charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+            <Text style={[styles.workspaceName, { color: textPrimary }]} numberOfLines={1}>
+              {appMode === 'chat' ? 'Chat' : workspace?.title ?? 'Workspace'}
+            </Text>
+          </Pressable>
+        </View>
+
+        <View style={styles.headerActions}>
+          <Pressable
+            onPress={onFilesPress}
+            style={({ pressed }) => [
+              styles.iconButton,
+              { backgroundColor: buttonBg },
+              pressed && { opacity: 0.7 },
+            ]}
+            accessibilityRole="button"
+            accessibilityLabel="Files"
+          >
+            <FolderOpen size={16} color={textPrimary} strokeWidth={1.8} />
+          </Pressable>
+
+          {appMode === 'code' && actionItems.length > 0 && (
+            <Pressable
+              onPress={() => setMoreVisible(true)}
+              style={({ pressed }) => [
+                styles.iconButton,
+                { backgroundColor: buttonBg },
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="More actions"
+            >
+              <Ellipsis size={16} color={textPrimary} strokeWidth={1.8} />
+            </Pressable>
+          )}
+
+          {appMode === 'chat' && (
+            <Pressable
+              onPress={handleNewChatPress}
+              style={({ pressed }) => [
+                styles.iconButton,
+                { backgroundColor: buttonBg },
+                pressed && { opacity: 0.7 },
+              ]}
+              accessibilityRole="button"
+              accessibilityLabel="Start new chat"
+            >
+              <SquarePen size={16} color={textPrimary} strokeWidth={1.8} />
+            </Pressable>
+          )}
+        </View>
+      </View>
+
+      <MobileHeaderActionsSheet
+        visible={moreVisible}
+        onClose={closeMore}
+        items={actionItems}
+      />
+    </>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    minHeight: 40,
+    paddingVertical: 8,
+    borderBottomWidth: 0.633,
+  },
+  leftSection: {
+    flex: 1,
+    minWidth: 0,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  menuButton: {
+    width: 32,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  workspaceButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    flex: 1,
+    minWidth: 0,
+    minHeight: 24,
+  },
+  avatar: {
+    width: 24,
+    height: 24,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+  },
+  avatarInitial: {
+    color: '#FFFFFF',
+    fontSize: 11,
+    fontFamily: Fonts.sansSemiBold,
+  },
+  workspaceName: {
+    fontSize: 15,
+    fontFamily: Fonts.sansMedium,
+    flex: 1,
+    lineHeight: 18,
+  },
+  headerActions: {
+    minWidth: 32,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    justifyContent: 'flex-end',
+  },
+  iconButton: {
+    width: 32,
+    height: 24,
+    borderRadius: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});
+

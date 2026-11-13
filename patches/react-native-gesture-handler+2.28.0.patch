@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native-gesture-handler/android/src/main/jni/CMakeLists.txt b/node_modules/react-native-gesture-handler/android/src/main/jni/CMakeLists.txt
+index 026e7ca..1f4c176 100644
+--- a/node_modules/react-native-gesture-handler/android/src/main/jni/CMakeLists.txt
++++ b/node_modules/react-native-gesture-handler/android/src/main/jni/CMakeLists.txt
+@@ -1,5 +1,8 @@
+ project(GestureHandler)
+ cmake_minimum_required(VERSION 3.9.0)
++# NDK r27b regression on Windows: the toolchain no longer implicitly links
++# libc++_shared, causing "undefined symbol" for every std:: symbol.
++link_libraries(c++)
+ 
+ string(
+   APPEND

@@ -1,0 +1,12 @@
+pub mod agent;
+pub mod connection;
+pub mod desktop;
+pub mod git;
+pub mod package;
+pub mod pairing;
+pub mod port_scanner;
+pub mod provider;
+pub mod runtime;
+pub mod session;
+pub mod sse_registry;
+pub mod task;

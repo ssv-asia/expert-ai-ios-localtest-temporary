@@ -1,0 +1,13 @@
+diff --git a/node_modules/react-native-svg/android/src/main/jni/CMakeLists.txt b/node_modules/react-native-svg/android/src/main/jni/CMakeLists.txt
+index 6f45884..5dd5357 100644
+--- a/node_modules/react-native-svg/android/src/main/jni/CMakeLists.txt
++++ b/node_modules/react-native-svg/android/src/main/jni/CMakeLists.txt
+@@ -1,5 +1,8 @@
+ cmake_minimum_required(VERSION 3.13)
+ set(CMAKE_VERBOSE_MAKEFILE ON)
++# NDK r27b regression on Windows: the toolchain no longer implicitly links
++# libc++_shared, causing "undefined symbol" for every std:: symbol.
++link_libraries(c++)
+ 
+ set(RNSVG_ANDROID_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
+ set(RNSVG_COMMON_DIR ${RNSVG_ANDROID_DIR}/../common/cpp)

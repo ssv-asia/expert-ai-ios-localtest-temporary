@@ -1,0 +1,11 @@
+@font-face {
+  font-family: ionicons;
+  src: url('/fonts/ionicons.ttf') format('truetype');
+  font-display: block;
+}
+
+@font-face {
+  font-family: material;
+  src: url('/fonts/material-icons.ttf') format('truetype');
+  font-display: block;
+}

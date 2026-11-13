@@ -1,0 +1,56 @@
+name: iOS local test IPA (unsigned)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-ios:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Install JavaScript dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Generate iOS project
+        run: npx expo prebuild --platform ios --no-install
+
+      - name: Set local test deployment target
+        run: |
+          node -e 'const fs=require("fs"); const p="ios/Podfile.properties.json"; const x=JSON.parse(fs.readFileSync(p,"utf8")); x["ios.deploymentTarget"]="15.5"; fs.writeFileSync(p, JSON.stringify(x,null,2)+"\n");'
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Build Release Pods
+        run: >-
+          xcodebuild -quiet -project ios/Pods/Pods.xcodeproj
+          -target Pods-ExpertAI -configuration Release -sdk iphoneos
+          CODE_SIGNING_ALLOWED=NO build
+
+      - name: Build the Release app without a signing profile
+        run: >-
+          xcodebuild -quiet -project ios/ExpertAI.xcodeproj
+          -target ExpertAI -configuration Release -sdk iphoneos
+          CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER=com.local.expertai build
+
+      - name: Package IPA
+        run: |
+          mkdir -p release-localtest/Payload
+          cp -R ios/build/Release-iphoneos/ExpertAI.app release-localtest/Payload/ExpertAI.app
+          (cd release-localtest && /usr/bin/zip -qry ExpertAI-for-AltServer.ipa Payload)
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExpertAI-for-AltServer
+          path: release-localtest/ExpertAI-for-AltServer.ipa
+          if-no-files-found: error
+          retention-days: 7
