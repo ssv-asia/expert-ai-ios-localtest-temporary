@@ -6,6 +6,9 @@ on:
 jobs:
   build-ios:
     runs-on: macos-15
+    env:
+      EXPO_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GITHUB_CLIENT_ID }}
+      SENTRY_DISABLE_AUTO_UPLOAD: "true"
     steps:
       - uses: actions/checkout@v4
 
