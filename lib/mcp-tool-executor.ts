@@ -1,4 +1,5 @@
 import * as Sentry from '@sentry/react-native';
+import { Platform } from 'react-native';
 
 import { resilientFetch, friendlyNetworkError } from './gateway-client';
 
@@ -42,8 +43,8 @@ export async function executeMcpToolOnGateway(
   signal?: AbortSignal,
   approved = false,
 ): Promise<any> {
-  // Current gateway tools are read-only. Keep the gate here even before a
-  // write-capable tool is introduced so future schemas cannot bypass consent.
+  // Keep the gate here so new Gateway tools cannot bypass consent; only tools
+  // explicitly classified as read-only skip user approval.
   if (isMcpToolApprovalRequired(name) && !approved) {
     return { error: true, code: 'approval_required', message: `Approval is required before using ${name}.` };
   }
@@ -72,7 +73,23 @@ export async function executeMcpToolOnGateway(
     if (data.error) {
       return { error: true, message: data.error.message || `Tool ${name} failed` };
     }
-    return data.result ?? data;
+    const result = data.result ?? data;
+    // MCP can report a tool failure in a successful JSON-RPC envelope. Convert
+    // that shape to the app's normal error result on iOS so the assistant and
+    // inline tool status never describe a failed operation as successful.
+    if (Platform.OS === 'ios' && result && typeof result === 'object' && result.isError === true) {
+      const contentMessage = Array.isArray(result.content)
+        ? result.content
+            .filter((item: unknown) => item && typeof item === 'object' && 'text' in item && typeof item.text === 'string')
+            .map((item: { text: string }) => item.text)
+            .join('\n')
+        : '';
+      const message = typeof result.message === 'string'
+        ? result.message
+        : contentMessage || `Tool ${name} reported that it could not complete.`;
+      return { ...result, error: true, code: 'tool_execution_failed', message };
+    }
+    return result;
   } catch (err) {
     console.error(`[MCP] Execution failed for ${name}:`, err);
     try {

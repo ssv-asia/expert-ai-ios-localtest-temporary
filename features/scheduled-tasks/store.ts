@@ -32,7 +32,9 @@ export interface ScheduledTask {
 interface ScheduledTasksState {
   tasks: ScheduledTask[];
   loaded: boolean;
+  persistenceError: string | null;
   load: () => Promise<void>;
+  retryPersistence: () => Promise<void>;
   addTask: (prompt: string, scheduledFor: number, remote?: { jobId: string; conversationId: string }) => Promise<ScheduledTask>;
   rescheduleTask: (id: string, scheduledFor: number) => Promise<void>;
   replaceRemoteTask: (id: string, scheduledFor: number, remote: { jobId: string; conversationId: string }) => Promise<void>;
@@ -49,7 +51,8 @@ async function readFromStore(): Promise<ScheduledTask[]> {
     }
     const raw = await SecureStore.getItemAsync(STORAGE_KEY);
     return raw ? JSON.parse(raw) : [];
-  } catch {
+  } catch (error) {
+    if (Platform.OS === 'ios') throw error;
     return [];
   }
 }
@@ -72,7 +75,8 @@ async function writeToStore(tasks: ScheduledTask[]) {
       } else {
         await SecureStore.setItemAsync(STORAGE_KEY, json);
       }
-    } catch {
+    } catch (error) {
+      if (Platform.OS === 'ios') throw error;
       // silently fail — matches this codebase's other SecureStore-backed stores
     }
   });
@@ -93,112 +97,154 @@ function makeTaskId() {
   return `task_${Date.now().toString(36)}_${nextId}`;
 }
 
-export const useScheduledTasksStore = create<ScheduledTasksState>((set, get) => ({
-  tasks: [],
-  loaded: false,
-
-  load: async () => {
-    const tasks = await readFromStore();
-    set({ tasks, loaded: true });
-  },
-
-  addTask: async (prompt, scheduledFor, remote) => {
-    const reminderId = remote ? null : await NotificationsService.scheduleTaskReminder(
-      `pending-${Date.now()}`,
-      prompt,
-      scheduledFor,
-    );
-    const task: ScheduledTask = {
-      id: makeTaskId(),
-      prompt,
-      scheduledFor,
-      createdAt: Date.now(),
-      status: 'pending',
-      reminderId,
-      jobId: remote?.jobId,
-      conversationId: remote?.conversationId,
-    };
-    const tasks = [...get().tasks, task];
-    set({ tasks });
-    await writeToStore(tasks);
-    return task;
-  },
-
-  rescheduleTask: async (id, scheduledFor) => {
-    const existing = get().tasks.find((t) => t.id === id);
-    await NotificationsService.cancelScheduled(existing?.reminderId);
-    const reminderId = existing
-      ? await NotificationsService.scheduleTaskReminder(id, existing.prompt, scheduledFor)
-      : null;
-    const tasks = get().tasks.map((t) =>
-      t.id === id
-        ? {
-            ...t,
-            scheduledFor,
-            status: 'pending' as const,
-            lastRunAt: undefined,
-            lastResultPreview: undefined,
-            reminderId,
-          }
-        : t,
-    );
-    set({ tasks });
-    await writeToStore(tasks);
-  },
-
-  replaceRemoteTask: async (id, scheduledFor, remote) => {
-    const existing = get().tasks.find((task) => task.id === id);
-    await NotificationsService.cancelScheduled(existing?.reminderId);
-    const tasks = get().tasks.map((task) =>
-      task.id === id
-        ? {
-            ...task,
-            scheduledFor,
-            status: 'pending' as const,
-            lastRunAt: undefined,
-            lastResultPreview: undefined,
-            reminderId: null,
-            jobId: remote.jobId,
-            conversationId: remote.conversationId,
-          }
-        : task,
-    );
-    set({ tasks });
-    await writeToStore(tasks);
-  },
-
-  markRun: async (id, status, resultPreview) => {
-    const existing = get().tasks.find((t) => t.id === id);
-    await NotificationsService.cancelScheduled(existing?.reminderId);
-    const tasks = get().tasks.map((t) =>
-      t.id === id
-        ? { ...t, status, lastRunAt: Date.now(), lastResultPreview: resultPreview, reminderId: null }
-        : t,
-    );
-    set({ tasks });
-    await writeToStore(tasks);
-  },
-
-  markPending: async (id) => {
-    const tasks = get().tasks.map((task) =>
-      task.id === id
-        ? { ...task, status: 'pending' as const, lastRunAt: undefined, lastResultPreview: undefined }
-        : task,
-    );
-    set({ tasks });
-    await writeToStore(tasks);
-  },
-
-  removeTask: async (id) => {
-    const existing = get().tasks.find((t) => t.id === id);
-    if (existing?.jobId) {
-      const session = await getSession();
-      const token = getActiveToken(session);
-      if (token) await cancelChatJob(token, existing.jobId).catch(() => {});
+export const useScheduledTasksStore = create<ScheduledTasksState>((set, get) => {
+  const persistTasks = async (tasks: ScheduledTask[]) => {
+    try {
+      await writeToStore(tasks);
+      if (Platform.OS === 'ios') set({ persistenceError: null });
+    } catch {
+      if (Platform.OS === 'ios') {
+        set({ persistenceError: 'Scheduled task changes could not be saved. Check device storage and retry.' });
+      }
     }
-    await NotificationsService.cancelScheduled(existing?.reminderId);
-    const tasks = get().tasks.filter((t) => t.id !== id);
-    set({ tasks });
-    await writeToStore(tasks);
-  },
-}));
+  };
+
+  return {
+    tasks: [],
+    loaded: false,
+    persistenceError: null,
+
+    load: async () => {
+      try {
+        const tasks = await readFromStore();
+        set({ tasks, loaded: true, persistenceError: null });
+      } catch {
+        set({ tasks: [], loaded: true, persistenceError: 'Scheduled tasks could not be loaded from this device.' });
+      }
+    },
+
+    retryPersistence: async () => {
+      try {
+        if (get().persistenceError?.startsWith('Scheduled tasks could not be loaded')) {
+          const tasks = await readFromStore();
+          set({ tasks, loaded: true, persistenceError: null });
+          return;
+        }
+        await writeToStore(get().tasks);
+        set({ persistenceError: null });
+      } catch {
+        const failedToLoad = get().persistenceError?.startsWith('Scheduled tasks could not be loaded');
+        set({ persistenceError: failedToLoad
+          ? 'Scheduled tasks could not be loaded from this device.'
+          : 'Scheduled task changes could not be saved. Check device storage and try again.' });
+      }
+    },
+
+    addTask: async (prompt, scheduledFor, remote) => {
+      // A tool call or notification can arrive before the screen's hydration
+      // effect finishes. Load first so adding one task cannot replace the saved
+      // list with an empty in-memory list.
+      if (Platform.OS === 'ios' && !get().loaded) await get().load();
+      if (Platform.OS === 'ios' && get().persistenceError?.startsWith('Scheduled tasks could not be loaded')) {
+        throw new Error('Scheduled tasks could not be loaded. Retry loading them before adding another task.');
+      }
+      const reminderId = remote ? null : await NotificationsService.scheduleTaskReminder(
+        `pending-${Date.now()}`,
+        prompt,
+        scheduledFor,
+      );
+      const task: ScheduledTask = {
+        id: makeTaskId(),
+        prompt,
+        scheduledFor,
+        createdAt: Date.now(),
+        status: 'pending',
+        reminderId,
+        jobId: remote?.jobId,
+        conversationId: remote?.conversationId,
+      };
+      const tasks = [...get().tasks, task];
+      set({ tasks });
+      await persistTasks(tasks);
+      return task;
+    },
+
+    rescheduleTask: async (id, scheduledFor) => {
+      const existing = get().tasks.find((t) => t.id === id);
+      await NotificationsService.cancelScheduled(existing?.reminderId);
+      const reminderId = existing
+        ? await NotificationsService.scheduleTaskReminder(id, existing.prompt, scheduledFor)
+        : null;
+      const tasks = get().tasks.map((t) =>
+        t.id === id
+          ? {
+              ...t,
+              scheduledFor,
+              status: 'pending' as const,
+              lastRunAt: undefined,
+              lastResultPreview: undefined,
+              reminderId,
+            }
+          : t,
+      );
+      set({ tasks });
+      await persistTasks(tasks);
+    },
+
+    replaceRemoteTask: async (id, scheduledFor, remote) => {
+      const existing = get().tasks.find((task) => task.id === id);
+      await NotificationsService.cancelScheduled(existing?.reminderId);
+      const tasks = get().tasks.map((task) =>
+        task.id === id
+          ? {
+              ...task,
+              scheduledFor,
+              status: 'pending' as const,
+              lastRunAt: undefined,
+              lastResultPreview: undefined,
+              reminderId: null,
+              jobId: remote.jobId,
+              conversationId: remote.conversationId,
+            }
+          : task,
+      );
+      set({ tasks });
+      await persistTasks(tasks);
+    },
+
+    markRun: async (id, status, resultPreview) => {
+      const existing = get().tasks.find((t) => t.id === id);
+      await NotificationsService.cancelScheduled(existing?.reminderId);
+      const tasks = get().tasks.map((t) =>
+        t.id === id
+          ? { ...t, status, lastRunAt: Date.now(), lastResultPreview: resultPreview, reminderId: null }
+          : t,
+      );
+      set({ tasks });
+      await persistTasks(tasks);
+    },
+
+    markPending: async (id) => {
+      const tasks = get().tasks.map((task) =>
+        task.id === id
+          ? { ...task, status: 'pending' as const, lastRunAt: undefined, lastResultPreview: undefined }
+          : task,
+      );
+      set({ tasks });
+      await persistTasks(tasks);
+    },
+
+    removeTask: async (id) => {
+      const existing = get().tasks.find((t) => t.id === id);
+      if (existing?.jobId) {
+        const session = await getSession();
+        const token = getActiveToken(session);
+        if (token) await cancelChatJob(token, existing.jobId).catch(() => {});
+      }
+      await NotificationsService.cancelScheduled(existing?.reminderId);
+      const tasks = get().tasks.filter((t) => t.id !== id);
+      set({ tasks });
+      await persistTasks(tasks);
+    },
+  };
+});

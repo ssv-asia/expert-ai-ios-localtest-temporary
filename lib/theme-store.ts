@@ -161,9 +161,9 @@ async function readFromStore(): Promise<ThemeSettings> {
     const raw = await SecureStore.getItemAsync(STORAGE_KEY);
     return raw
       ? JSON.parse(raw)
-      : { preset: 'dark', fontSize: 1 };
+      : { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 };
   } catch {
-    return { preset: 'dark', fontSize: 1 };
+    return { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 };
   }
 }
 
@@ -181,7 +181,7 @@ async function writeToStore(settings: ThemeSettings) {
 }
 
 export const useThemeStore = create<ThemeStoreState>((set, get) => ({
-  settings: { preset: 'dark', fontSize: 1 },
+  settings: { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 },
   loaded: false,
   aiDisclaimerSeen: false,
 
@@ -261,7 +261,7 @@ export const useThemeStore = create<ThemeStoreState>((set, get) => ({
   },
 
   reset: async () => {
-    const settings = { preset: 'dark' as const, fontSize: 1 };
+    const settings = { preset: (Platform.OS === 'ios' ? 'expertAI' : 'dark') as ThemePreset, fontSize: 1 };
     set({ settings });
     await writeToStore(settings);
   },

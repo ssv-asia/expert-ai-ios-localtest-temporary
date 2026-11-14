@@ -33,6 +33,7 @@ interface ThemeColors {
   surface: string;
   surfaceRaised: string;
   accent: string;
+  errorColor: string;
   successColor: string;
 }
 
@@ -53,7 +54,7 @@ interface NoteWriterProps {
   noteId: string | null;
   body: string;
   /** Debounced-persisted by the parent (mapped to the note id). */
-  onChangeBody: (next: string) => void;
+  onChangeBody: (next: string) => void | Promise<void>;
   onClose: () => void;
   onBackToToday: () => void;
   /** Extra actions surfaced in the overflow menu (AI insights, share, etc.). */
@@ -86,11 +87,12 @@ export function NoteWriter({
   const selectionRef = useRef(selection);
   const [applySel, setApplySel] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
-  const [keyboardHeight, setKeyboardHeight] = useState(0);
-  const [saveState, setSaveState] = useState<'saved' | 'pending'>('saved');
+  const [saveState, setSaveState] = useState<'saved' | 'pending' | 'error'>('saved');
   const [words, setWords] = useState(() => wordCount(body));
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
   const inputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const saveRevisionRef = useRef(0);
   const lastId = useRef<string | null>(null);
 
   const palette = useMemo(() => notePaletteFrom(colors), [colors]);
@@ -111,6 +113,17 @@ export function NoteWriter({
     }
   }, [visible, noteId, body]);
 
+  // Preserve the Android manual inset path. On iOS, KeyboardAvoidingView owns
+  // the keyboard frame and the same height must not be applied a second time.
+  useEffect(() => {
+    if (Platform.OS === 'ios' || Platform.OS === 'web') return;
+    const show = Keyboard.addListener('keyboardDidShow', (event) => {
+      setKeyboardHeight(event.endCoordinates.height);
+    });
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardHeight(0));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
   // Counting the whole note on every keystroke makes long journals feel
   // sticky while the native editor is scrolling. Update the small counter
   // after typing settles instead.
@@ -118,17 +131,6 @@ export function NoteWriter({
     const timer = setTimeout(() => setWords(wordCount(draft)), 250);
     return () => clearTimeout(timer);
   }, [draft]);
-
-  useEffect(() => {
-    const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const s = Keyboard.addListener(showEvt, (e) => setKeyboardHeight(e?.endCoordinates?.height ?? 0));
-    const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
-    return () => {
-      s.remove();
-      h.remove();
-    };
-  }, []);
 
   useEffect(
     () => () => {
@@ -138,21 +140,51 @@ export function NoteWriter({
   );
 
   const scheduleSave = (next: string) => {
+    if (Platform.OS !== 'ios') {
+      setSaveState('pending');
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+      debounceRef.current = setTimeout(() => {
+        onChangeBody(next);
+        setSaveState('saved');
+        debounceRef.current = null;
+      }, 500);
+      return;
+    }
+    const revision = ++saveRevisionRef.current;
     setSaveState('pending');
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      onChangeBody(next);
-      setSaveState('saved');
       debounceRef.current = null;
+      Promise.resolve().then(() => onChangeBody(next)).then(
+        () => { if (revision === saveRevisionRef.current) setSaveState('saved'); },
+        () => { if (revision === saveRevisionRef.current) setSaveState('error'); },
+      );
     }, 500);
   };
-  const persistNow = (next: string) => {
+  const persistNow = async (next: string): Promise<boolean> => {
+    if (Platform.OS !== 'ios') {
+      if (debounceRef.current) {
+        clearTimeout(debounceRef.current);
+        debounceRef.current = null;
+      }
+      onChangeBody(next);
+      setSaveState('saved');
+      return true;
+    }
+    const revision = ++saveRevisionRef.current;
     if (debounceRef.current) {
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
     }
-    onChangeBody(next);
-    setSaveState('saved');
+    setSaveState('pending');
+    try {
+      await onChangeBody(next);
+      if (revision === saveRevisionRef.current) setSaveState('saved');
+      return true;
+    } catch {
+      if (revision === saveRevisionRef.current) setSaveState('error');
+      return false;
+    }
   };
 
   const handleChange = (next: string) => {
@@ -181,13 +213,24 @@ export function NoteWriter({
     inputRef.current?.focus();
   };
 
-  const close = () => {
-    persistNow(draftRef.current);
+  const close = async () => {
+    if (Platform.OS !== 'ios') {
+      persistNow(draftRef.current);
+      Keyboard.dismiss();
+      onClose();
+      return;
+    }
+    if (!(await persistNow(draftRef.current))) return;
     Keyboard.dismiss();
     onClose();
   };
 
-  const bottomPad = keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 8);
+  // KeyboardAvoidingView already consumes the keyboard frame on iOS. Adding
+  // that same height as permanent bottom padding lifted the editor twice and
+  // pushed it beneath the prediction/accessory row on smaller iPhones.
+  const bottomPad = Platform.OS === 'ios'
+    ? Math.max(insets.bottom, 8)
+    : keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 8);
 
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close}>
@@ -204,14 +247,28 @@ export function NoteWriter({
             <Text style={[styles.sub, { color: colors.textTertiary }]}> 
               {words} {words === 1 ? 'word' : 'words'}
               {streak > 0 ? `  ·  🔥 ${streak}` : ''}
-              {mode === 'write' ? `  ·  ${saveState === 'pending' ? 'Saving…' : 'Saved'}` : ''}
+              {mode === 'write' ? '  ·  ' : ''}
+              {mode === 'write' ? (
+                <Text
+                  accessibilityRole={saveState === 'error' ? 'button' : undefined}
+                  accessibilityLabel={saveState === 'error' ? 'Note could not be saved. Tap to retry.' : undefined}
+                  onPress={saveState === 'error' ? () => void persistNow(draftRef.current) : undefined}
+                  style={saveState === 'error' ? { color: colors.errorColor, textDecorationLine: 'underline' } : undefined}
+                >
+                  {saveState === 'pending' ? 'Saving…' : saveState === 'error' ? 'Could not save · Tap to retry' : 'Saved'}
+                </Text>
+              ) : null}
             </Text>
           </View>
           {!isViewingToday ? (
             <Pressable
               onPress={() => {
-                persistNow(draftRef.current);
-                onBackToToday();
+                if (Platform.OS === 'ios') {
+                  void persistNow(draftRef.current).then((saved) => { if (saved) onBackToToday(); });
+                } else {
+                  persistNow(draftRef.current);
+                  onBackToToday();
+                }
               }}
               hitSlop={8}
               style={styles.topIcon}
@@ -222,9 +279,17 @@ export function NoteWriter({
           <Pressable
             onPress={() => {
               if (mode === 'write') {
-                persistNow(draftRef.current);
-                Keyboard.dismiss();
-                setMode('read');
+                if (Platform.OS === 'ios') {
+                  void persistNow(draftRef.current).then((saved) => {
+                    if (!saved) return;
+                    Keyboard.dismiss();
+                    setMode('read');
+                  });
+                } else {
+                  persistNow(draftRef.current);
+                  Keyboard.dismiss();
+                  setMode('read');
+                }
               } else {
                 setMode('write');
                 setTimeout(() => inputRef.current?.focus(), 60);

@@ -2,6 +2,9 @@ name: iOS local test IPA (unsigned)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - codex/ios-platform-fixes-20261114
 
 jobs:
   build-ios:
@@ -25,9 +28,15 @@ jobs:
       - name: Generate iOS project
         run: npx expo prebuild --platform ios --no-install
 
-      - name: Set local test deployment target
+      - name: Set iOS deployment target required by ML Kit
         run: |
-          node -e 'const fs=require("fs"); const p="ios/Podfile.properties.json"; const x=JSON.parse(fs.readFileSync(p,"utf8")); x["ios.deploymentTarget"]="15.5"; fs.writeFileSync(p, JSON.stringify(x,null,2)+"\n");'
+          node <<'NODE'
+          const fs = require('fs');
+          const path = 'ios/Podfile.properties.json';
+          const properties = JSON.parse(fs.readFileSync(path, 'utf8'));
+          properties['ios.deploymentTarget'] = '16.0';
+          fs.writeFileSync(path, `${JSON.stringify(properties, null, 2)}\n`);
+          NODE
 
       - name: Install CocoaPods
         working-directory: ios
@@ -47,13 +56,24 @@ jobs:
 
       - name: Package IPA
         run: |
+          set -euo pipefail
+          APP_PATH="ios/build/Release-iphoneos/ExpertAI.app"
+          test -d "$APP_PATH"
+          plutil -lint "$APP_PATH/Info.plist"
+          BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
+          test "$BUNDLE_ID" = "com.local.expertai"
+          MINIMUM_IOS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP_PATH/Info.plist")
+          echo "Built bundle: $BUNDLE_ID"
+          echo "Minimum iOS: $MINIMUM_IOS"
           mkdir -p release-localtest/Payload
-          cp -R ios/build/Release-iphoneos/ExpertAI.app release-localtest/Payload/ExpertAI.app
+          cp -R "$APP_PATH" release-localtest/Payload/ExpertAI.app
           (cd release-localtest && /usr/bin/zip -qry ExpertAI-for-AltServer.ipa Payload)
+          /usr/bin/unzip -tq release-localtest/ExpertAI-for-AltServer.ipa
+          shasum -a 256 release-localtest/ExpertAI-for-AltServer.ipa > release-localtest/ExpertAI-for-AltServer.ipa.sha256
 
       - uses: actions/upload-artifact@v4
         with:
           name: ExpertAI-for-AltServer
-          path: release-localtest/ExpertAI-for-AltServer.ipa
+          path: release-localtest/ExpertAI-for-AltServer.ipa*
           if-no-files-found: error
-          retention-days: 7
+          retention-days: 3

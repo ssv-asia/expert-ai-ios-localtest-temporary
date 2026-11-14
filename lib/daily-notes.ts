@@ -240,8 +240,20 @@ export async function appendToDailyNote(id: string, block: string): Promise<void
  * bounded operations through the app, which keeps the note directory private. */
 export async function executeDailyNoteTool(args: Record<string, unknown>): Promise<Record<string, unknown>> {
   const action = String(args.action || 'read');
+  if (action === 'list') {
+    const notes = await listDailyNotes();
+    return {
+      ok: true,
+      notes: notes.slice(0, 40).map(({ id, title, touched, updatedAt }) => ({ id, title, touched, updatedAt })),
+    };
+  }
   const id = String(args.date || localDayKey());
   if (!/^\d{4}-\d{2}-\d{2}$/.test(id)) return { error: true, message: 'Use date format YYYY-MM-DD.' };
+  const [year, month, day] = id.split('-').map(Number);
+  const parsedDate = new Date(year, month - 1, day);
+  if (parsedDate.getFullYear() !== year || parsedDate.getMonth() !== month - 1 || parsedDate.getDate() !== day) {
+    return { error: true, message: 'Choose a real calendar date in YYYY-MM-DD format.' };
+  }
   if (action === 'read') {
     const note = await getDailyNote(id);
     return note ? { ok: true, date: id, title: note.title, body: note.body } : { ok: true, date: id, exists: false };

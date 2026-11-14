@@ -22,6 +22,8 @@ interface ScheduleTaskSheetProps {
   initialPrompt?: string;
   initialTime?: number;
   onClose: () => void;
+  /** Called after the native iOS modal dismissal transition completes. */
+  onDismiss?: () => void;
   onSchedule: (prompt: string, scheduledFor: number) => void;
 }
 
@@ -69,6 +71,7 @@ export function ScheduleTaskSheet({
   initialPrompt,
   initialTime,
   onClose,
+  onDismiss,
   onSchedule,
 }: ScheduleTaskSheetProps) {
   const insets = useSafeAreaInsets();
@@ -151,7 +154,7 @@ export function ScheduleTaskSheet({
   const inputBg = isDark ? '#1E1E1E' : '#F6F6F6';
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} onDismiss={onDismiss}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}

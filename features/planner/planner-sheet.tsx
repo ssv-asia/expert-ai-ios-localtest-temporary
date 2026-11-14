@@ -45,6 +45,8 @@ interface PlannerSheetProps {
   isDark: boolean;
   colors: ThemeColors;
   onClose: () => void;
+  /** Called after the native iOS planner modal has fully dismissed. */
+  onDismiss?: () => void;
 
   // Daily notes
   note: DailyNote | null;
@@ -77,6 +79,7 @@ export function PlannerSheet(props: PlannerSheetProps) {
     isDark,
     colors,
     onClose,
+    onDismiss,
     note,
     isViewingToday,
     streak,
@@ -105,10 +108,13 @@ export function PlannerSheet(props: PlannerSheetProps) {
   useEffect(() => {
     const showEvt = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
     const hideEvt = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const s = Keyboard.addListener(showEvt, (e) => setKeyboardHeight(e?.endCoordinates?.height ?? 0));
+    const updateFrame = (e: { endCoordinates?: { height?: number } }) => setKeyboardHeight(e?.endCoordinates?.height ?? 0);
+    const s = Keyboard.addListener(showEvt, updateFrame);
+    const frame = Platform.OS === 'ios' ? Keyboard.addListener('keyboardWillChangeFrame', updateFrame) : null;
     const h = Keyboard.addListener(hideEvt, () => setKeyboardHeight(0));
     return () => {
       s.remove();
+      frame?.remove();
       h.remove();
     };
   }, []);
@@ -116,7 +122,9 @@ export function PlannerSheet(props: PlannerSheetProps) {
   // Fixed sheet height keeps the size stable across tab switches (no jump), and
   // shrinks to fit above the keyboard when it's open.
   const avail = windowHeight - insets.top - keyboardHeight - 8;
-  const sheetHeight = Math.max(380, Math.min(720, windowHeight * 0.86, avail));
+  const sheetHeight = Platform.OS === 'ios'
+    ? Math.max(0, Math.min(720, windowHeight * 0.86, avail))
+    : Math.max(380, Math.min(720, windowHeight * 0.86, avail));
 
   // Snappy tab transition without ever unmounting the Modal (which is what caused
   // the fade-out/fade-in flicker between two separate sheets).
@@ -137,7 +145,7 @@ export function PlannerSheet(props: PlannerSheetProps) {
   const inputBg = colors.surface;
 
   return (
-    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="slide" onRequestClose={onClose} onDismiss={onDismiss}>
       <View style={styles.overlay}>
         <Pressable
           style={StyleSheet.absoluteFill}
@@ -511,7 +519,7 @@ function ScheduledPanel({
   onRunTask: (task: ScheduledTask) => void;
   onRescheduleRemote?: (task: ScheduledTask, scheduledFor: number) => Promise<void>;
 }) {
-  const { tasks, loaded, load, rescheduleTask, removeTask } = useScheduledTasksStore();
+  const { tasks, loaded, load, persistenceError, retryPersistence, rescheduleTask, removeTask } = useScheduledTasksStore();
   const [rescheduling, setRescheduling] = useState<ScheduledTask | null>(null);
 
   useEffect(() => {
@@ -533,6 +541,16 @@ function ScheduledPanel({
           <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 13, color: colors.text }}>New</Text>
         </Pressable>
       </View>
+
+      {Platform.OS === 'ios' && persistenceError ? (
+        <View style={{ marginHorizontal: 2, marginBottom: 8, padding: 10, borderRadius: 10, backgroundColor: isDark ? '#35242A' : '#FFF1F0', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+          <Ionicons name="warning-outline" size={16} color="#D92D20" />
+          <Text style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 12, color: colors.text }}>{persistenceError}</Text>
+          <Pressable onPress={() => { void retryPersistence(); }} accessibilityRole="button" accessibilityLabel="Retry saving scheduled tasks">
+            <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 12, color: colors.accent }}>Retry</Text>
+          </Pressable>
+        </View>
+      ) : null}
 
       <ScrollView style={{ flex: 1 }} showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 12 }}>
         {pending.length === 0 && history.length === 0 ? (

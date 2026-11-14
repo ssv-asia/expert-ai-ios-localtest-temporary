@@ -5,6 +5,7 @@ import {
   Alert,
   Animated,
   AppState,
+  Dimensions,
   Easing,
   Keyboard,
   FlatList,
@@ -18,6 +19,7 @@ import {
   TextInput,
   ToastAndroid,
   View,
+  type KeyboardEvent,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -1064,23 +1066,25 @@ export default function SimpleChatScreen() {
     router.push('/(app)/servers');
   }, [router]);
 
-  // Restore the validated v43 strategy: Android does not resize or pan the
-  // window; one spring-driven JS offset moves the complete chat layout,
-  // including the empty-state heading and action buttons.
+  // Keep Android's measured lift and follow iOS keyboard frame changes. Using
+  // the full docked iOS overlap keeps the composer above QuickType; a floating
+  // iPad keyboard does not lift the entire chat layout.
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const keyboardPadding = useRef(new Animated.Value(0)).current;
+  const [iosKeyboardPadding, setIosKeyboardPadding] = useState(0);
   useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, (event) => {
-      const height = Platform.OS === 'ios'
-        ? event.endCoordinates.height - insets.bottom
-        : event.endCoordinates.height + insets.bottom;
-      setIsKeyboardVisible(true);
-      // Root padding is a layout property, so the native driver cannot be
-      // used. A spring makes that reflow overshoot and visibly wobble on
-      // Samsung/foldable keyboards. Cancel the previous transition and use a
-      // short one-way easing instead.
+    const updateKeyboardFrame = (event: KeyboardEvent) => {
+      if (Platform.OS === 'ios') {
+        const { height, screenY } = event.endCoordinates;
+        const screenHeight = Dimensions.get('screen').height;
+        setIsKeyboardVisible(height > 0);
+        const reachesBottom = screenY + height >= screenHeight - 1;
+        Keyboard.scheduleLayoutAnimation(event);
+        setIosKeyboardPadding(reachesBottom ? Math.max(0, screenHeight - screenY) : 0);
+        return;
+      }
+      const height = event.endCoordinates.height + insets.bottom;
+      setIsKeyboardVisible(height > 0);
       keyboardPadding.stopAnimation();
       Animated.timing(keyboardPadding, {
         toValue: Math.max(0, height),
@@ -1089,8 +1093,10 @@ export default function SimpleChatScreen() {
         isInteraction: false,
         useNativeDriver: false,
       }).start();
-    });
-    const hideSub = Keyboard.addListener(hideEvent, () => {
+    };
+    const showSub = Platform.OS === 'ios' ? null : Keyboard.addListener('keyboardDidShow', updateKeyboardFrame);
+    const frameSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardWillChangeFrame', updateKeyboardFrame) : null;
+    const hideSub = Platform.OS !== 'ios' ? Keyboard.addListener('keyboardDidHide', () => {
       setIsKeyboardVisible(false);
       keyboardPadding.stopAnimation();
       Animated.timing(keyboardPadding, {
@@ -1100,8 +1106,8 @@ export default function SimpleChatScreen() {
         isInteraction: false,
         useNativeDriver: false,
       }).start();
-    });
-    return () => { showSub.remove(); hideSub.remove(); };
+    }) : null;
+    return () => { showSub?.remove(); frameSub?.remove(); hideSub?.remove(); };
   }, [keyboardPadding, insets.bottom]);
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
@@ -1215,6 +1221,10 @@ export default function SimpleChatScreen() {
 
   // Planner: a single sheet hosting both Daily notes and Scheduled tasks as tabs.
   const [plannerOpen, setPlannerOpen] = useState(false);
+  const pendingNoteWriterOpenRef = useRef(false);
+  const pendingScheduleSheetOpenRef = useRef(false);
+  const pendingPlannerAfterScheduleDismissRef = useRef(false);
+  const scheduleOpenedFromPlannerRef = useRef(false);
   const [plannerTab, setPlannerTab] = useState<PlannerTab>('scheduled');
   // The full-screen writing surface (opened from the planner's Daily notes tab).
   const [noteWriterOpen, setNoteWriterOpen] = useState(false);
@@ -1631,7 +1641,7 @@ export default function SimpleChatScreen() {
   }, [accountOpen, refreshAccountData]);
 
   useEffect(() => {
-    if (!accountOpen || !session || (Platform.OS === 'web' && webAccountTab !== 'history')) return;
+    if (!accountOpen || !session || Platform.OS === 'ios' || (Platform.OS === 'web' && webAccountTab !== 'history')) return;
     let cancelled = false;
     setWebHistoryLoading(true);
     fetchPaymentHistory(session.token)
@@ -2367,30 +2377,71 @@ export default function SimpleChatScreen() {
                   tool_calls: toolCalls,
                 } as unknown as ChatMessage;
 
-                const toolResultMsgs = await Promise.all(
-                  toolCalls.map(async (tc) => {
-                    let args: Record<string, any> = {};
-                    try {
-                      args = JSON.parse(tc.function.arguments || '{}');
-                    } catch {
-                      // malformed args — call with none rather than failing the whole turn
+                const toolResultMsgs: ChatMessage[] = [];
+                // Run sequentially because iOS alerts and modal presentations
+                // must not overlap. Daily notes are private local data: the
+                // user's chat instruction authorizes the requested local edit.
+                for (const tc of toolCalls) {
+                  let args: Record<string, any> = {};
+                  let argsParseError: string | null = null;
+                  try {
+                    const parsed = JSON.parse(tc.function.arguments || '{}');
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                      if (Platform.OS === 'ios') argsParseError = 'Tool arguments must be a JSON object.';
+                    } else {
+                      args = parsed;
                     }
-                    const approved = isMcpToolApprovalRequired(tc.function.name)
-                      ? await askMcpToolApproval(tc.function.name)
-                      : false;
-                    const result = tc.function.name === 'daily_note'
-                      ? (approved ? await executeDailyNoteTool(args) : { error: true, code: 'approval_required', message: 'Approval is required before changing a daily note.' })
-                      : await executeMcpToolWithDeadline(tc.function.name, args, token, 45_000, approved);
-                    return {
-                      role: 'tool' as const,
-                      tool_call_id: tc.id,
-                      content: JSON.stringify(result),
-                    } as unknown as ChatMessage;
-                  }),
-                );
+                  } catch (error) {
+                    if (Platform.OS === 'ios') {
+                      argsParseError = error instanceof Error ? `Tool arguments are invalid JSON: ${error.message}` : 'Tool arguments are invalid JSON.';
+                    }
+                  }
+                  const needsApproval = !argsParseError && (tc.function.name === 'daily_note'
+                    ? Platform.OS !== 'ios'
+                    : isMcpToolApprovalRequired(tc.function.name));
+                  const approved = needsApproval ? await askMcpToolApproval(tc.function.name) : false;
+                  let result: any;
+                  if (argsParseError) {
+                    result = { error: true, code: 'invalid_arguments', message: argsParseError };
+                  } else if (!approved && needsApproval) {
+                    result = { error: true, code: 'approval_required', message: `Approval is required before using ${tc.function.name}.` };
+                  } else if (tc.function.name === 'daily_note') {
+                    try {
+                      result = await executeDailyNoteTool(args);
+                      if (Platform.OS === 'ios' && !result?.error && result?.ok) {
+                        const refreshedNotes = await listDailyNotes();
+                        setDailyNotesList(refreshedNotes);
+                        setDailyStreak(computeStreak(refreshedNotes));
+                        const refreshedNote = typeof result.date === 'string'
+                          ? refreshedNotes.find((note) => note.id === result.date)
+                          : undefined;
+                        if (refreshedNote) {
+                          setDailyNote((current) => current?.id === refreshedNote.id ? refreshedNote : current);
+                        }
+                      }
+                    } catch (error) {
+                      result = { error: true, message: error instanceof Error ? error.message : 'Daily note could not be updated.' };
+                    }
+                  } else {
+                    result = await executeMcpToolWithDeadline(tc.function.name, args, token, 45_000, approved);
+                  }
+                  toolResultMsgs.push({
+                    role: 'tool' as const,
+                    tool_call_id: tc.id,
+                    content: JSON.stringify(result),
+                  } as unknown as ChatMessage);
+                }
                 setAgentToolRuns((previous) => ({
                   ...previous,
-                  [conversationId]: toolNames.map((name) => ({ name, status: 'complete', startedAt: previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now(), durationMs: Date.now() - (previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now()) })),
+                  [conversationId]: toolNames.map((name, index) => {
+                    const startedAt = previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now();
+                    let failed = false;
+                    try {
+                      const content = toolResultMsgs[index]?.content;
+                      failed = Boolean(JSON.parse(typeof content === 'string' ? content : '{}').error);
+                    } catch { failed = true; }
+                    return { name, status: failed ? 'failed' : 'complete', startedAt, durationMs: Date.now() - startedAt };
+                  }),
                 }));
 
                 // Clear the "Looking that up..." placeholder before the follow-up turn streams
@@ -3267,6 +3318,77 @@ export default function SimpleChatScreen() {
     [ensureTodayNote],
   );
 
+  const openNoteWriterAfterPlanner = useCallback(() => {
+    if (Platform.OS !== 'ios') {
+      setNoteWriterOpen(true);
+      return;
+    }
+    pendingNoteWriterOpenRef.current = true;
+    setPlannerOpen(false);
+    setTimeout(() => {
+      if (!pendingNoteWriterOpenRef.current) return;
+      pendingNoteWriterOpenRef.current = false;
+      setNoteWriterOpen(true);
+    }, 900);
+  }, []);
+
+  const handlePlannerDismiss = useCallback(() => {
+    if (pendingNoteWriterOpenRef.current) {
+      pendingNoteWriterOpenRef.current = false;
+      setNoteWriterOpen(true);
+      return;
+    }
+    if (pendingScheduleSheetOpenRef.current) {
+      pendingScheduleSheetOpenRef.current = false;
+      setScheduleNewOpen(true);
+    }
+  }, []);
+
+  const openScheduleFromPlanner = useCallback(() => {
+    setScheduleInitialPrompt('');
+    scheduleOpenedFromPlannerRef.current = true;
+    if (Platform.OS !== 'ios') {
+      setPlannerOpen(false);
+      setScheduleNewOpen(true);
+      return;
+    }
+    pendingScheduleSheetOpenRef.current = true;
+    setPlannerOpen(false);
+    setTimeout(() => {
+      if (!pendingScheduleSheetOpenRef.current) return;
+      pendingScheduleSheetOpenRef.current = false;
+      setScheduleNewOpen(true);
+    }, 900);
+  }, []);
+
+  const handleScheduleSheetDismiss = useCallback(() => {
+    if (!pendingPlannerAfterScheduleDismissRef.current) return;
+    pendingPlannerAfterScheduleDismissRef.current = false;
+    scheduleOpenedFromPlannerRef.current = false;
+    setPlannerOpen(true);
+  }, []);
+
+  const closeScheduleAndShowPlanner = useCallback(() => {
+    setPlannerTab('scheduled');
+    if (Platform.OS !== 'ios') {
+      setScheduleNewOpen(false);
+      setPlannerOpen(true);
+      return;
+    }
+    pendingPlannerAfterScheduleDismissRef.current = true;
+    setScheduleNewOpen(false);
+    setTimeout(handleScheduleSheetDismiss, 900);
+  }, [handleScheduleSheetDismiss]);
+
+  const handleScheduleSheetClose = useCallback(() => {
+    if (scheduleOpenedFromPlannerRef.current && Platform.OS === 'ios') {
+      closeScheduleAndShowPlanner();
+      return;
+    }
+    scheduleOpenedFromPlannerRef.current = false;
+    setScheduleNewOpen(false);
+  }, [closeScheduleAndShowPlanner]);
+
   const handleChangePlannerTab = useCallback(
     async (t: PlannerTab) => {
       if (t === 'notes' && !dailyNote) await ensureTodayNote();
@@ -3293,16 +3415,16 @@ export default function SimpleChatScreen() {
     if (n) {
       setDailyNote(n);
       setViewingTodayNote(id === localDayKey());
-      setNoteWriterOpen(true); // jump straight into the full-screen writer
+      openNoteWriterAfterPlanner();
     }
-  }, []);
+  }, [openNoteWriterAfterPlanner]);
 
   const handleOpenNoteDate = useCallback(async (id: string) => {
     const existing = await getDailyNote(id);
     if (existing) {
       setDailyNote(existing);
       setViewingTodayNote(id === localDayKey());
-      setNoteWriterOpen(true);
+      openNoteWriterAfterPlanner();
       return;
     }
     Alert.alert(
@@ -3316,14 +3438,14 @@ export default function SimpleChatScreen() {
             void getOrCreateNoteForDate(id).then((n) => {
               setDailyNote(n);
               setViewingTodayNote(id === localDayKey());
-              setNoteWriterOpen(true);
+              openNoteWriterAfterPlanner();
               void refreshDailyNotes();
             });
           },
         },
       ],
     );
-  }, [refreshDailyNotes]);
+  }, [refreshDailyNotes, openNoteWriterAfterPlanner]);
 
   const handleBackToToday = useCallback(async () => {
     const today = await getOrCreateTodayNote();
@@ -4081,7 +4203,7 @@ export default function SimpleChatScreen() {
         styles.container,
         {
           backgroundColor: colors.background,
-          paddingBottom: keyboardPadding,
+          paddingBottom: Platform.OS === 'ios' ? iosKeyboardPadding : keyboardPadding,
         },
       ]}
     >
@@ -5060,6 +5182,7 @@ export default function SimpleChatScreen() {
         isDark={isDark}
         colors={colors}
         onClose={() => setPlannerOpen(false)}
+        onDismiss={handlePlannerDismiss}
         note={dailyNote}
         isViewingToday={viewingTodayNote}
         streak={dailyStreak}
@@ -5067,7 +5190,7 @@ export default function SimpleChatScreen() {
         onChangeBody={handleSaveNoteBody}
         onOpenArchived={handleOpenArchivedNote}
         onOpenDate={handleOpenNoteDate}
-        onOpenWriter={() => setNoteWriterOpen(true)}
+        onOpenWriter={openNoteWriterAfterPlanner}
         onBackToToday={handleBackToToday}
         onDeleteArchived={handleDeleteArchivedNote}
         onAiInsights={handleNoteAiInsights}
@@ -5075,10 +5198,7 @@ export default function SimpleChatScreen() {
         onWeeklyDigest={handleNoteWeeklyDigest}
         onEndOfDayReview={handleNoteEndOfDayReview}
         onShareNote={handleShareNote}
-        onOpenScheduleNew={() => {
-          setPlannerOpen(false);
-          setScheduleNewOpen(true);
-        }}
+        onOpenScheduleNew={openScheduleFromPlanner}
         onRunTask={runScheduledTask}
         onRescheduleRemote={async (task, scheduledFor) => {
           const token = session ? getActiveToken(session) : null;
@@ -5124,9 +5244,7 @@ export default function SimpleChatScreen() {
         isViewingToday={viewingTodayNote}
         noteId={dailyNote?.id ?? null}
         body={dailyNote?.body ?? ''}
-        onChangeBody={(next) => {
-          if (dailyNote) handleSaveNoteBody(dailyNote.id, next);
-        }}
+        onChangeBody={(next) => dailyNote ? handleSaveNoteBody(dailyNote.id, next) : undefined}
         onClose={() => setNoteWriterOpen(false)}
         onBackToToday={handleBackToToday}
         actions={
@@ -5153,7 +5271,8 @@ export default function SimpleChatScreen() {
         isDark={isDark}
         colors={colors}
         initialPrompt={scheduleInitialPrompt}
-        onClose={() => setScheduleNewOpen(false)}
+        onClose={handleScheduleSheetClose}
+        onDismiss={handleScheduleSheetDismiss}
         onSchedule={async (prompt, scheduledFor) => {
           const token = session ? getActiveToken(session) : null;
           if (!token) {
@@ -5217,18 +5336,14 @@ export default function SimpleChatScreen() {
             if (!definiteRejection) {
               // Keep an uncertain network submission in the outbox; it may
               // have been accepted server-side before the response was lost.
-              setScheduleNewOpen(false);
-              setPlannerTab('scheduled');
-              setPlannerOpen(true);
+              closeScheduleAndShowPlanner();
               return;
             }
             // Explicit client rejection cannot have created a job, so retain
             // the existing local-reminder fallback.
             await useScheduledTasksStore.getState().addTask(prompt, scheduledFor);
           }
-          setScheduleNewOpen(false);
-          setPlannerTab('scheduled');
-          setPlannerOpen(true);
+          closeScheduleAndShowPlanner();
         }}
       />
 
@@ -5356,6 +5471,7 @@ export default function SimpleChatScreen() {
                 </Text>
               ) : null}
             </View>
+            {Platform.OS === 'android' ? <>
             <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 18, color: colors.text, marginTop: 18 }}>
               Choose a plan
             </Text>
@@ -5403,6 +5519,16 @@ export default function SimpleChatScreen() {
                 </View>
               ))}
             </View>
+            </> : (
+              <View style={{ marginTop: 18, padding: 14, borderRadius: 14, backgroundColor: colors.buttonBackground }}>
+                <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: colors.text }}>
+                  App Store billing
+                </Text>
+                <Text style={{ fontFamily: Fonts.sans, fontSize: 13, lineHeight: 19, color: colors.textSecondary, marginTop: 5 }}>
+                  In-app purchases, subscription management, and restore are not enabled in this iOS test build.
+                </Text>
+              </View>
+            )}
 
             {visibleAccountInfo?.welcomeBack ? (
               <View style={{ marginTop: 14, padding: 10, borderRadius: 10, backgroundColor: colors.buttonBackground }}>
@@ -5532,7 +5658,7 @@ export default function SimpleChatScreen() {
                 <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.text }}>Check subscription status</Text>
               </Pressable>
             ) : null}
-            <Pressable
+            {Platform.OS === 'android' ? <Pressable
               onPress={handleRestorePurchases}
               disabled={restoringPurchases}
               style={[styles.modelRow, { justifyContent: 'center', marginTop: 16, opacity: restoringPurchases ? 0.55 : 1 }]}
@@ -5544,7 +5670,7 @@ export default function SimpleChatScreen() {
                   Restore purchases
                 </Text>
               )}
-            </Pressable>
+            </Pressable> : null}
             <Pressable
               onPress={() =>
                 Linking.openURL(
