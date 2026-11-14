@@ -11,15 +11,7 @@
     "ios": {
       "supportsTablet": true,
       "deploymentTarget": "16.0",
-      "associatedDomains": [
-        "applinks:ssv.asia",
-        "applinks:ssv.asia"
-      ],
-      "infoPlist": {
-        "NSSpeechRecognitionUsageDescription": "Allow Expert AI to use speech recognition to turn your speech into a chat message.",
-        "NSMicrophoneUsageDescription": "Allow Expert AI to use the microphone to turn your speech into a chat message."
-      },
-      "bundleIdentifier": "com.ssvasia.expertai"
+      "associatedDomains": ["applinks:ssv.asia"]
     },
     "android": {
       "package": "com.ssvasia.expertai",
@@ -35,10 +27,7 @@
               "pathPrefix": "/app-auth/callback"
             }
           ],
-          "category": [
-            "BROWSABLE",
-            "DEFAULT"
-          ]
+          "category": ["BROWSABLE", "DEFAULT"]
         }
       ],
       "adaptiveIcon": {
@@ -54,9 +43,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO",
         "android.permission.MODIFY_AUDIO_SETTINGS",
-        "android.permission.POST_NOTIFICATIONS",
-        "android.permission.USE_BIOMETRIC",
-        "android.permission.USE_FINGERPRINT"
+        "android.permission.POST_NOTIFICATIONS"
       ]
     },
     "web": {
