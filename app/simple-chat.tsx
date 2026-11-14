@@ -234,7 +234,7 @@ function buildSystemContextMessage(opts?: {
     const DOC_CONTEXT_CAP = 12000;
     const truncated = opts.document.content.length > DOC_CONTEXT_CAP;
     const docForModel = truncated ? `${opts.document.content.slice(0, DOC_CONTEXT_CAP)}\n\n[...document truncated for length — ${opts.document.content.length} characters total...]` : opts.document.content;
-    content += `\n\nThe user has this document open in the editor above the chat: "${opts.document.path}". Its ${truncated ? 'content (truncated below — see note)' : 'current content'} is:\n\n---\n${docForModel}\n---\n\nIf the user is just asking a question about it, answer normally in plain prose — do not repeat the document back. If the user asks you to change, save, write, store, or commit content to it, act like a careful document agent: make the smallest possible targeted edit and preserve all unrelated text. If the user says to save, write, or store a previous response verbatim, use that previous assistant response as the source and apply it to this file; do not merely print a ready-to-copy version. If the file already contains that exact content, report that no change is needed. Reply with a short summary followed by a fenced \`\`\`patchjson block containing JSON with an \"operations\" array. Each operation must be one of: {\"type\":\"replace\",\"find\":\"exact unique old text\",\"replace\":\"new text\"}, {\"type\":\"delete\",\"find\":\"exact unique text\"}, {\"type\":\"insert_before\" or \"insert_after\",\"find\":\"exact unique anchor\",\"content\":\"text\"}, or {\"type\":\"append\",\"content\":\"text\"}. Use exact text copied from the document, never broad guesses, and keep each operation local. Use a full-document replacement only when the user explicitly asks to replace the entire file and the complete file is present in context. If the requested change cannot be safely anchored, explain that instead of rewriting the whole document. Do not return a full replacement document for a normal edit.`;
+    content += `\n\nThe user has this document open in the editor above the chat: "${opts.document.path}". Its ${truncated ? 'content (truncated below — see note)' : 'current content'} is:\n\n---\n${docForModel}\n---\n\nIf the user is just asking a question about it, answer normally in plain prose — do not repeat the document back. When the user starts with /doc, treat it as an explicit request to edit this open Git repository file. If the user asks you to change, save, write, store, or commit content to it, act like a careful document agent: make the smallest possible targeted edit and preserve all unrelated text. If the user says to save, write, or store a previous response verbatim, use that previous assistant response as the source and apply it to this file; do not merely print a ready-to-copy version. If the file already contains that exact content, report that no change is needed. Reply with a short summary followed by a fenced \`\`\`patchjson block containing JSON with an \"operations\" array. Each operation must be one of: {\"type\":\"replace\",\"find\":\"exact unique old text\",\"replace\":\"new text\"}, {\"type\":\"delete\",\"find\":\"exact unique text\"}, {\"type\":\"insert_before\" or \"insert_after\",\"find\":\"exact unique anchor\",\"content\":\"text\"}, or {\"type\":\"append\",\"content\":\"text\"}. Use exact text copied from the document, never broad guesses, and keep each operation local. Use a full-document replacement only when the user explicitly asks to replace the entire file and the complete file is present in context. If the requested change cannot be safely anchored, explain that instead of rewriting the whole document. Do not return a full replacement document for a normal edit.`;
   }
   return { role: 'system', content };
 }
@@ -305,14 +305,23 @@ function currentStyleOpts(messageText: string = '') {
  *  the chat bubble a second time when it's already shown, editable, in the
  *  document card above. Returns null when there's nothing to do, so the
  *  caller can leave the message text untouched (the common case). */
-function maybeApplyDocumentEdit(replyText: string, targetDoc: { archiveId: string; path: string } | null): string | null {
+function maybeApplyDocumentEdit(
+  replyText: string,
+  targetDoc: { archiveId: string; path: string } | null,
+  userRequest = '',
+): string | null {
   if (!targetDoc) return null;
+  const requestedEdit = /^\/doc\b/i.test(userRequest.trim()) || DOCUMENT_INTENT_RE.test(userRequest);
   const doc = useDocumentChatStore.getState().activeDocument;
   // Guard against the document being closed or swapped for a different file
   // while this reply was still streaming (a multi-second round trip) — apply
   // the edit only if it's still the same file the user was looking at when
   // they sent the message, never whatever happens to be open now.
-  if (!doc || doc.archiveId !== targetDoc.archiveId || doc.path !== targetDoc.path) return null;
+  if (!doc || doc.archiveId !== targetDoc.archiveId || doc.path !== targetDoc.path) {
+    return requestedEdit
+      ? `${replyText.trim()}\n\n⚠️ The open file changed while I was preparing that edit, so I left the current file untouched. Reopen the intended file and try again.`
+      : replyText;
+  }
   const plan = parseDocumentEditPlan(replyText);
   if (plan) {
     const applied = applyDocumentEditPlan(doc.content, plan);
@@ -323,7 +332,9 @@ function maybeApplyDocumentEdit(replyText: string, targetDoc: { archiveId: strin
   // Backward-compatible fallback for older sessions/models that still return
   // the previous full-document contract. New turns are explicitly patch-only.
   const match = replyText.match(/```document\r?\n([\s\S]*?)\r?\n```\s*$/m);
-  if (!match) return null;
+  if (!match) return requestedEdit
+    ? `${replyText.trim()}\n\n⚠️ I didn’t change the open file because the edit plan was missing or invalid. Please try again with a smaller, specific change.`
+    : null;
   useDocumentChatStore.getState().updateContent(match[1]);
   return replyText.replace(match[0], '📄 Document updated above — review it, then tap Commit to save it to GitHub.').trim();
 }
@@ -2331,7 +2342,7 @@ export default function SimpleChatScreen() {
               queuedSendsRef.current.delete(assistantId);
               const completedTimer = retryTimersRef.current.get(assistantId);
               if (completedTimer) { clearTimeout(completedTimer); retryTimersRef.current.delete(assistantId); }
-              const documentDisplayText = maybeApplyDocumentEdit(fullText, targetDocForEdit);
+              const documentDisplayText = maybeApplyDocumentEdit(fullText, targetDocForEdit, lastUserText);
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId
@@ -3399,13 +3410,9 @@ export default function SimpleChatScreen() {
 
   const handleSaveNoteBody = useCallback(
     async (id: string, body: string) => {
-      try {
-        await saveDailyNoteBody(id, body);
-      } catch {
-        /* best effort */
-      }
+      await saveDailyNoteBody(id, body);
       setDailyNote((prev) => (prev && prev.id === id ? { ...prev, body, touched: true } : prev));
-      refreshDailyNotes();
+      await refreshDailyNotes();
     },
     [refreshDailyNotes],
   );
