@@ -95,3 +95,10 @@ written. Update this section only after checking the GitHub run, commit SHA,
 artifact contents, IPA checksum, metadata, and download location. An unsigned
 IPA requires a compatible signing/sideloading flow; it cannot be installed by
 itself as a signed App Store package.
+
+
+## Packaging diagnostic result — run 43714653876
+
+The diagnostic replacement run on `b562c4a6ae6a23fdb203b7aab3ac6ad089e045ac` passed Release compilation and the app checks for bundle `com.local.expertai`, version `1.5.3 (1)`, minimum iOS `16.0`, iPhone+iPad device families, arm64 executable, and privacy manifests. Packaging then failed because the embedded Share Extension bundle identifier was `com.local.expertai`, while its target is configured as `com.local.expertai.share-extension`. The workflow supplied `PRODUCT_BUNDLE_IDENTIFIER=com.local.expertai` as a global `xcodebuild` command-line override, which also overrode the extension target setting.
+
+The global bundle-ID override has been removed; Expo-generated target-specific identifiers remain authoritative. The packaging gate continues to require the app bundle ID and the expected distinct Share Extension bundle ID. Run `43714653876` uploaded no IPA. Build the corrected commit and inspect the extension Info.plist before reporting an artifact.
