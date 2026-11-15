@@ -1664,6 +1664,8 @@ export default function SimpleChatScreen() {
   // identity is real and traceable server-side (see startFreeTrial), but the UI must
   // never go straight from a tap to a live chat box with zero acknowledgment step.
   const [trialGateOpen, setTrialGateOpen] = useState(false);
+  const [trialStarting, setTrialStarting] = useState(false);
+  const trialStartInFlightRef = useRef(false);
   const [helpCenterOpen, setHelpCenterOpen] = useState(false);
 
   useEffect(() => {
@@ -5459,6 +5461,9 @@ export default function SimpleChatScreen() {
   }, []);
 
   const handleConfirmTrial = useCallback(async () => {
+    if (Platform.OS === 'ios' && trialStartInFlightRef.current) return;
+    if (Platform.OS === 'ios') trialStartInFlightRef.current = true;
+    setTrialStarting(true);
     setTrialGateOpen(false);
     setSignInError(null);
     setSignInStatus('opening');
@@ -5471,6 +5476,9 @@ export default function SimpleChatScreen() {
     } catch (err) {
       setSignInStatus('error');
       setSignInError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (Platform.OS === 'ios') trialStartInFlightRef.current = false;
+      setTrialStarting(false);
     }
   }, []);
 
@@ -7933,7 +7941,7 @@ export default function SimpleChatScreen() {
             ) : null}
             <Pressable
               onPress={handleStartTrial}
-              disabled={signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
+              disabled={trialStarting || signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
               style={({ pressed }) => [
                 styles.sendButton,
                 {
@@ -7941,12 +7949,14 @@ export default function SimpleChatScreen() {
                   backgroundColor: 'transparent',
                   borderWidth: 1,
                   borderColor: colors.accent,
-                  opacity: signInStatus === 'opening' || signInStatus === 'waiting' ? 0.4 : pressed ? 0.75 : 1,
+                  flexDirection: 'row',
+                  opacity: trialStarting || signInStatus === 'opening' || signInStatus === 'waiting' ? 0.4 : pressed ? 0.75 : 1,
                 },
               ]}
             >
+              {Platform.OS === 'ios' && trialStarting ? <ActivityIndicator size="small" color={colors.accent} style={{ marginRight: 8 }} /> : null}
               <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: colors.text }}>
-                Unlock 30 questions per day
+                {Platform.OS === 'ios' && trialStarting ? 'Starting your trial…' : 'Unlock 30 questions per day'}
               </Text>
             </Pressable>
             <Pressable

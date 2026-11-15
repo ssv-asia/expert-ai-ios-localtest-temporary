@@ -514,6 +514,11 @@ not a claim of parity.
   completions as failed and preserves retry/restart paths. This cannot fix or
   prove upstream model generation or APNs delivery; no failing job ID or device
   notification trace was available in this audit.
+- Added iOS-only trial-start progress feedback and an in-flight guard against
+  duplicate taps creating multiple synthetic trial identities. Android trial
+  button rendering and request behavior remain unchanged. TypeScript, Expo lint,
+  whitespace, and no-Android-path checks pass for the local change; it has not
+  yet been built or exercised on an iPhone.
 
 The owner confirmed that this local-test repository is the iOS edit/build target
 and the organization repository is the APK codebase. The APK repository was
