@@ -493,9 +493,27 @@ not a claim of parity.
   did not complete successfully.
 - `npx tsc --noEmit`, `npx expo lint`, `git -c core.whitespace=cr-at-eol diff
   HEAD --check`, and the no-Android-path diff check pass for this follow-up.
-- The two follow-up source changes are not yet included in the latest pushed
-  commit. No build has been started. The local-test Google OAuth variable,
-  Gateway trial behavior, and device acceptance remain release gates.
+- The follow-up source changes are included in pushed commit `62d4814`.
+  No build has been started. The local-test Google OAuth variable, Gateway
+  trial behavior, and device acceptance remain release gates.
+
+### Trial and task follow-up — 15 November 2026
+
+- Compared `lib/auth.ts` in the APK repository (`expert-terminal/expert-ai-mobile`)
+  with this iOS checkout. The Gateway trial flow has the same `/auth/trial` →
+  `/auth/poll` contract in both clients; the iOS-specific change is to publish
+  the session only after Keychain/SecureStore persistence succeeds and to
+  validate the trial start response. This source comparison cannot establish
+  that the deployed Gateway currently satisfies that contract.
+- A read-only request to `https://api.ssv.asia/openapi.json` returned HTTP 404;
+  the Gateway exposes no contract at that path. No live trial account was
+  created. The user's report that trial did not complete remains unverified
+  against the deployed route and needs device/Gateway evidence.
+- Re-reviewed iOS scheduled-job submission, idempotent recovery, task row
+  association, retries, and local due reminders. The client marks empty durable
+  completions as failed and preserves retry/restart paths. This cannot fix or
+  prove upstream model generation or APNs delivery; no failing job ID or device
+  notification trace was available in this audit.
 
 The owner confirmed that this local-test repository is the iOS edit/build target
 and the organization repository is the APK codebase. The APK repository was
