@@ -92,8 +92,9 @@ async function readAll(): Promise<Archive[]> {
   return cache;
 }
 
-async function writeAll(archives: Archive[]): Promise<void> {
+async function writeAll(update: Archive[] | ((current: Archive[]) => Archive[])): Promise<void> {
   const operation = writeChain.then(async () => {
+    const archives = typeof update === 'function' ? update([...await readAll()]) : update;
     if (Platform.OS === 'ios') {
       try {
         await writeKey(JSON.stringify(archives));
@@ -121,19 +122,18 @@ export function makeArchiveId(): string {
 }
 
 export async function addArchive(name: string, repoFullName: string): Promise<Archive> {
-  const all = [...await readAll()];
-  if (all.some((a) => a.repoFullName.toLowerCase() === repoFullName.toLowerCase())) {
-    throw new Error('This repository is already connected as an archive.');
-  }
   const archive: Archive = { id: makeArchiveId(), name: name.trim() || repoFullName, repoFullName, addedAt: Date.now() };
-  all.unshift(archive);
-  await writeAll(all);
+  await writeAll((current) => {
+    if (current.some((item) => item.repoFullName.toLowerCase() === repoFullName.toLowerCase())) {
+      throw new Error('This repository is already connected as an archive.');
+    }
+    return [archive, ...current];
+  });
   return archive;
 }
 
 export async function removeArchive(id: string): Promise<void> {
-  const all = [...await readAll()];
-  await writeAll(all.filter((a) => a.id !== id));
+  await writeAll((current) => current.filter((archive) => archive.id !== id));
 }
 
 /** Accepts "owner/repo", a full https://github.com/owner/repo URL, or a URL

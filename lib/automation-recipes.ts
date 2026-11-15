@@ -46,8 +46,9 @@ async function readAll(): Promise<AutomationRecipe[]> {
   }
   return cache;
 }
-async function writeAll(items: AutomationRecipe[]) {
+async function writeAll(update: AutomationRecipe[] | ((current: AutomationRecipe[]) => AutomationRecipe[])) {
   const operation = writeChain.then(async () => {
+    const items = typeof update === 'function' ? update([...await readAll()]) : update;
     const next = items.slice(-MAX);
     const raw = JSON.stringify(next);
     if (Platform.OS === 'ios') {
@@ -70,8 +71,10 @@ async function writeAll(items: AutomationRecipe[]) {
       return;
     }
     cache = next;
-    if (Platform.OS === 'web') localStorage.setItem(KEY, raw);
-    else await FileSystem.writeAsStringAsync(PATH, raw);
+    try {
+      if (Platform.OS === 'web') localStorage.setItem(KEY, raw);
+      else await FileSystem.writeAsStringAsync(PATH, raw);
+    } catch { /* preserve the legacy best-effort behavior outside iOS */ }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
   await operation;
@@ -79,7 +82,7 @@ async function writeAll(items: AutomationRecipe[]) {
 export async function listAutomationRecipes(): Promise<AutomationRecipe[]> { return [...(await readAll())].reverse(); }
 export async function saveAutomationRecipe(name: string, prompt: string): Promise<AutomationRecipe> {
   const item = { id: `recipe_${Date.now().toString(36)}`, name: name.trim().slice(0, 80) || 'Untitled recipe', prompt: prompt.trim().slice(0, 8000), createdAt: Date.now() };
-  await writeAll([...(await readAll()), item]);
+  await writeAll((current) => [...current, item]);
   return item;
 }
-export async function deleteAutomationRecipe(id: string): Promise<void> { await writeAll((await readAll()).filter((item) => item.id !== id)); }
+export async function deleteAutomationRecipe(id: string): Promise<void> { await writeAll((current) => current.filter((item) => item.id !== id)); }

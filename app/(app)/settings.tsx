@@ -259,6 +259,7 @@ function RecipesSection({ isDark, textPrimary, textMuted }: { isDark: boolean; t
                 await deleteAutomationRecipe(recipe.id);
                 reload();
               } catch (error) {
+                if (Platform.OS !== 'ios') throw error;
                 Alert.alert('Workflow not deleted', error instanceof Error ? error.message : 'The saved workflow could not be deleted. Please try again.');
               }
             } }])}><Text style={{ color: '#c95757', fontSize: 12 }}>Delete</Text></Pressable>

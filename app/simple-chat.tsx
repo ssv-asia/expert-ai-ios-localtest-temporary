@@ -5335,6 +5335,7 @@ export default function SimpleChatScreen() {
           { text: 'Open Settings', onPress: () => router.push('/(app)/settings') },
         ]);
       } catch (error) {
+        if (Platform.OS !== 'ios') throw error;
         Alert.alert('Workflow not saved', error instanceof Error ? error.message : 'This workflow could not be saved on this device. Please try again.');
       }
     };

@@ -1,5 +1,18 @@
 # Expert AI iOS / APK parity handoff
 
+## Owner-confirmed repository scope — 15 November 2026
+
+- This `expert-ai-ios-localtest-temporary` checkout is the editable iOS source
+  and build target for this migration session. Do not edit the organization APK
+  repository here.
+- The organization repository is the APK codebase. Future APK work may use this
+  iOS repository as a behavioral/reference source; Android-specific changes are
+  handled in that separate session/repository.
+- GitHub currently reports this iOS local-test repository as public. The owner
+  has directed this session to edit this named repository; keep credentials,
+  signing material, and private configuration out of commits. Confirm repository
+  visibility with the owner before any change that depends on private source.
+
 ## Critical reliability issue reported by the owner
 
 The APK has also shown intermittent stuck generation, but reopening it usually
@@ -194,8 +207,10 @@ working actions.
 - Make iOS archive, project, saved-document, and automation-recipe snapshots
   atomic with a temporary file and a last-known-good backup. Recover a valid
   backup when the primary JSON is damaged, preserve the last in-memory value
-  on write failure, and surface recipe load/save/delete errors. These recovery
-  writes are iOS-only; Android retains its existing persistence behavior.
+  on write failure, serialize read-modify-write operations to prevent concurrent
+  updates overwriting one another, and surface recipe load/save/delete errors.
+  These recovery writes are iOS-only; Android retains its existing persistence
+  behavior.
 - Move the iOS scheduled-task list off SecureStore's small per-item size limit
   using an atomic file snapshot, backup recovery, and one-time migration from
   the existing SecureStore key; Android and web retain their existing storage.
@@ -206,6 +221,12 @@ working actions.
   a compatible tool call. Verify the resulting task appears in the task UI,
   retains its Gateway identity, and produces the expected reminder/completion
   notification. `/task` remains its separate durable-agent mode.
+- A read-only review of the APK repository's current `app/simple-chat.tsx`
+  confirms the same response-driven Gateway tool flow: streamed tool calls are
+  executed through generic `/mcp`, with only `daily_note` handled locally. The
+  reviewed APK chat source contains no client-side scheduling-tool name or
+  schema. The deployed Gateway schema and task-list synchronization still need
+  authenticated end-to-end verification; do not hardcode a guessed command.
 
 These changes are source-level only so far. Static TypeScript/lint checks and
 targeted document-edit/config checks pass, but they still need a native iPhone
@@ -454,3 +475,42 @@ not a claim of parity.
   is below the Xcode 16.1 minimum for this React Native version, CocoaPods is
   unavailable locally, and product/provider release configuration remains
   unresolved.
+
+## Current continuation status — 15 November 2026
+
+The owner confirmed that this local-test repository is the iOS edit/build target
+and the organization repository is the APK codebase. The APK repository was
+reviewed read-only for parity; it was not modified. Future Android sessions can
+use this iOS repository as a behavioral reference.
+
+- Latest pushed iOS commit before this continuation: `488324e` on
+  `codex/ios-platform-fixes-20261114`. The continuation changes below are local
+  until their current diff is reviewed and committed.
+- This continuation makes iOS archive, project, document, and automation-recipe
+  file snapshots recoverable through primary, backup, and completed temporary
+  JSON files; it serializes read-modify-write operations to prevent concurrent
+  edits from overwriting each other. Recipe load/save/delete errors are shown
+  on iOS. Android persistence behavior is preserved in the shared files.
+- Account deletion now avoids automatic retry on iOS because a timed-out
+  destructive POST may already have succeeded. Android retains its previous
+  retry count.
+- The APK's `app/simple-chat.tsx` was fetched from the private organization repo
+  through read-only GitHub access. It also executes Gateway tool calls through
+  generic `/mcp` and handles only `daily_note` locally. That source contains no
+  client-side scheduling tool name/schema; the deployed Gateway scheduling
+  contract and local task-list synchronization remain unverified.
+- `npx tsc --noEmit`, `npx expo lint`, whitespace checks, and the no-Android-path
+  diff check pass for the current local edits. No native build or physical
+  device run has tested these changes.
+- GitHub reports the selected local-test repository as public. The user has
+  confirmed it as the iOS target; do not commit secrets or signing material.
+  The local `gh` token is invalid. The IPA workflow is still
+  `workflow_dispatch`-only, requires repository variable
+  `EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID`, and its presence could not be
+  verified through the connected GitHub read-only tools.
+- No build is running. No IPA for current source exists. Remaining external
+  requirements include the real Google iOS OAuth registration/configuration,
+  Gateway Apple identity-token validation before an Apple sign-in client can be
+  safely added, the iOS-complete privacy/provider-retention policy, and
+  physical-device acceptance for notifications, task scheduling, auth, archives,
+  share extension, keyboard, and iPad layouts.

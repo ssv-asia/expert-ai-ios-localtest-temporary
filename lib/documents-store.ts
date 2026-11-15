@@ -100,8 +100,9 @@ async function readAll(): Promise<StoredDocument[]> {
   return cache;
 }
 
-async function writeAll(docs: StoredDocument[]): Promise<void> {
+async function writeAll(update: StoredDocument[] | ((current: StoredDocument[]) => StoredDocument[])): Promise<void> {
   const operation = writeChain.then(async () => {
+    const docs = typeof update === 'function' ? update([...await readAll()]) : update;
     const bounded = docs
       .slice()
       .sort((a, b) => b.updatedAt - a.updatedAt)
@@ -135,16 +136,16 @@ export async function getDocument(id: string): Promise<StoredDocument | null> {
 }
 
 export async function saveDocument(doc: StoredDocument): Promise<void> {
-  const all = [...await readAll()];
-  const idx = all.findIndex((d) => d.id === doc.id);
-  if (idx >= 0) all[idx] = doc;
-  else all.unshift(doc);
-  await writeAll(all);
+  await writeAll((current) => {
+    const idx = current.findIndex((document) => document.id === doc.id);
+    if (idx >= 0) current[idx] = doc;
+    else current.unshift(doc);
+    return current;
+  });
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const all = [...await readAll()];
-  await writeAll(all.filter((d) => d.id !== id));
+  await writeAll((current) => current.filter((document) => document.id !== id));
 }
 
 export function makeDocumentId(): string {

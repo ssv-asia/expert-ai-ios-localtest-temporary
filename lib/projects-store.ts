@@ -85,8 +85,9 @@ async function readAll(): Promise<Project[]> {
   return cache;
 }
 
-async function writeAll(projects: Project[]): Promise<void> {
+async function writeAll(update: Project[] | ((current: Project[]) => Project[])): Promise<void> {
   const operation = writeChain.then(async () => {
+    const projects = typeof update === 'function' ? update([...await readAll()]) : update;
     if (Platform.OS === 'ios') {
       try {
         await writeKey(JSON.stringify(projects));
@@ -114,23 +115,21 @@ export function makeProjectId(): string {
 }
 
 export async function createProject(name: string): Promise<Project> {
-  const all = [...await readAll()];
   const now = Date.now();
   const project: Project = { id: makeProjectId(), name: name.trim() || 'Untitled project', createdAt: now, updatedAt: now };
-  all.unshift(project);
-  await writeAll(all);
+  await writeAll((current) => [project, ...current]);
   return project;
 }
 
 export async function renameProject(id: string, name: string): Promise<void> {
-  const all = [...await readAll()];
-  const idx = all.findIndex((p) => p.id === id);
-  if (idx < 0) return;
-  all[idx] = { ...all[idx], name: name.trim() || all[idx].name, updatedAt: Date.now() };
-  await writeAll(all);
+  await writeAll((current) => {
+    const idx = current.findIndex((project) => project.id === id);
+    if (idx < 0) return current;
+    current[idx] = { ...current[idx], name: name.trim() || current[idx].name, updatedAt: Date.now() };
+    return current;
+  });
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const all = await readAll();
-  await writeAll(all.filter((p) => p.id !== id));
+  await writeAll((current) => current.filter((project) => project.id !== id));
 }
