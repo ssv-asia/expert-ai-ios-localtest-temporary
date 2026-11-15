@@ -460,3 +460,4 @@
 - Keep `/doc` pass-through to the Gateway; remove a newly added local prefix interception so the app's open-file context handling does not claim Gateway slash-command ownership.
 - Reject unsafe iOS release configuration combinations: local-test bundle IDs cannot be selected for EAS production, production builds require production APNs, and production Google OAuth must be configured.
 - Show a generic tool-action failure on iOS when Gateway tool execution throws, instead of incorrectly labelling archive or note failures as knowledge-base failures; APK copy is unchanged.
+- Pin the manual iOS IPA workflow to Xcode 16.4 on `macos-15` and fail early if that toolchain is not selected.

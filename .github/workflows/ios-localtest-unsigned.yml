@@ -28,8 +28,9 @@ jobs:
 
       - name: Verify React Native iOS toolchain
         run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app
           xcodebuild -version
-          node -e 'const { execFileSync } = require("node:child_process"); const match = execFileSync("xcodebuild", ["-version"], { encoding: "utf8" }).match(/Xcode (\d+)\.(\d+)/); if (!match || Number(match[1]) < 16 || (Number(match[1]) === 16 && Number(match[2]) < 1)) { console.error("React Native 0.81 requires Xcode 16.1 or newer."); process.exit(1); }'
+          node -e 'const { execFileSync } = require("node:child_process"); const match = execFileSync("xcodebuild", ["-version"], { encoding: "utf8" }).match(/Xcode (\d+)\.(\d+)/); if (!match || match[1] !== "16" || match[2] !== "4") { console.error("The iOS IPA workflow must use its pinned Xcode 16.4 toolchain."); process.exit(1); }'
 
       - name: Install JavaScript dependencies
         run: |

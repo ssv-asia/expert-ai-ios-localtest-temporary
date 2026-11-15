@@ -372,7 +372,9 @@ not a claim of parity.
   can restore push delivery for in-flight jobs. Local reminders are separate.
 - Local Xcode is 15.2, below React Native 0.81's Xcode 16.1 minimum; use a
   compatible Xcode before attempting a local native build. The GitHub workflow
-  must also be confirmed to select a supported Xcode on its macOS runner.
+  now explicitly selects Xcode 16.4 on `macos-15`, whose current runner image
+  includes that version; the workflow still needs to run against this source.
+  See the official [macos-15 runner image inventory](https://github.com/actions/runner-images/blob/main/images/macos/macos-15-Readme.md).
 - The unsigned iOS workflow now checks the generated Google callback URL
   scheme, Share Extension target dependency/embed phase, extension bundle ID
   and app-group entitlement. It builds the CocoaPods workspace with one
