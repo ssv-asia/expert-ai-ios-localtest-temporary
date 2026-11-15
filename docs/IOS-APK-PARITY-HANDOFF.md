@@ -478,12 +478,31 @@ not a claim of parity.
 
 ## Current continuation status — 15 November 2026
 
+### Follow-up source audit
+
+- The consent text no longer names specific downstream providers that this
+  client cannot verify. It states that Expert AI's Gateway may use models and
+  other services required by requested features; the published policy still
+  needs an owner-reviewed iOS provider and retention inventory.
+- Hardened the shared trial/sign-in persistence path: native in-memory auth
+  state is published only after SecureStore succeeds. The `/auth/trial`
+  response is validated for the nonce, expiry, and browser URL when required,
+  so an incomplete Gateway reply returns a clear error rather than failing
+  later in the polling flow. The trial flow still requires live Gateway and
+  device verification; the user's previous iOS test reported that this button
+  did not complete successfully.
+- `npx tsc --noEmit`, `npx expo lint`, `git -c core.whitespace=cr-at-eol diff
+  HEAD --check`, and the no-Android-path diff check pass for this follow-up.
+- The two follow-up source changes are not yet included in the latest pushed
+  commit. No build has been started. The local-test Google OAuth variable,
+  Gateway trial behavior, and device acceptance remain release gates.
+
 The owner confirmed that this local-test repository is the iOS edit/build target
 and the organization repository is the APK codebase. The APK repository was
 reviewed read-only for parity; it was not modified. Future Android sessions can
 use this iOS repository as a behavioral reference.
 
-- Latest pushed iOS commit at this handoff: `6ae9df3` on
+- Latest pushed iOS commit before this follow-up: `76c3686` on
   `codex/ios-platform-fixes-20261114`. The reviewed continuation changes are
   committed and pushed.
 - This continuation makes iOS archive, project, document, and automation-recipe

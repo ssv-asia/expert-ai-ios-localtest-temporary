@@ -58,7 +58,7 @@ export function AIDisclaimerModal({
               <View style={[styles.section, styles.dataNotice, { borderColor: isDark ? '#51421f' : '#ead9ad', backgroundColor: isDark ? '#292315' : '#fff9e9' }]}>
                 <Text style={[styles.sectionTitle, { color: textPrimary }]}>Your content and AI providers</Text>
                 <Text style={[styles.body, { color: textMuted }]}>
-                  When you send a message, Expert AI sends your prompt and the conversation context or files you choose to include to its gateway and the providers needed to answer. This can include OpenRouter and the selected AI model provider, Tavily for requested web searches, and Supabase for knowledge retrieval. Those providers process your content under their own terms and retention policies. Do not send content you are not comfortable sharing. Read the Privacy Policy for details.
+                  When you send a message, Expert AI sends your prompt and the conversation context or files you choose to include to Expert AI’s gateway. The gateway may process that content using AI models and other services needed for features you request, such as web search or knowledge retrieval. Those services may process content under their own terms and retention policies. Do not send content you are not comfortable sharing. Read the Privacy Policy for details.
                 </Text>
               </View>
             ) : null}
