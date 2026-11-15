@@ -1355,11 +1355,46 @@ export default function SimpleChatScreen() {
     let savedConversations: Conversation[] | null = null;
     const observedJobs: { jobId: string; assistantMessageId: string; status: string; updatedAt: number; error: string | null; retryable?: boolean; phase?: string; nextRetryAt?: number | null; servedModel?: string | null }[] = [];
     for (const item of pending) {
+        if (!generationIsCurrent(item.assistantMessageId)) continue;
         if (item.rejected) {
           const rejectionText = item.rejectionMessage || 'The Gateway rejected this request before creating a job. Retry it or use the saved local task.';
-          if (Platform.OS === 'ios' && item.scheduledTaskId) {
-            const task = useScheduledTasksStore.getState().tasks.find((candidate) => candidate.id === item.scheduledTaskId);
-            if (task?.submissionPending) {
+          if (item.jobId) {
+            const poll = activeDurablePollsRef.current.get(item.assistantMessageId);
+            if (poll) poll.cancelled = true;
+            activeDurablePollsRef.current.delete(item.assistantMessageId);
+            durableJobIdsRef.current.delete(item.assistantMessageId);
+            pendingTurnsRef.current.delete(item.assistantMessageId);
+            queuedSendsRef.current.delete(item.assistantMessageId);
+            const retryTimer = retryTimersRef.current.get(item.assistantMessageId);
+            if (retryTimer) clearTimeout(retryTimer);
+            retryTimersRef.current.delete(item.assistantMessageId);
+            turnGenerationRef.current.set(item.assistantMessageId, (turnGenerationRef.current.get(item.assistantMessageId) ?? 0) + 1);
+          }
+          if (Platform.OS === 'ios' && (item.scheduledTaskId || item.jobId)) {
+            const task = useScheduledTasksStore.getState().tasks.find((candidate) =>
+              candidate.id === item.scheduledTaskId || (!!item.jobId && candidate.jobId === item.jobId),
+            );
+            if (task && item.jobId && task.jobId === item.jobId) {
+              // The Gateway explicitly says the saved job no longer exists.
+              // Keep the local task and reminder, but unlink the dead job so
+              // Play can safely submit a new idempotent run.
+              try {
+                await useScheduledTasksStore.getState().markRemoteJobLost(task.id, rejectionText);
+                void NotificationsService.notifyTaskFailed(task.prompt, rejectionText, task.id, task.conversationId);
+              } catch {
+                // Preserve the 404 in the outbox so the task link can be
+                // repaired when local storage is writable again.
+                await rememberChatJob({
+                  jobId: item.jobId,
+                  assistantMessageId: item.assistantMessageId,
+                  conversationId: item.conversationId,
+                  scheduledTaskId: task.id,
+                  scheduledFor: item.scheduledFor,
+                  createdAt: item.createdAt,
+                }).catch(() => {});
+                Alert.alert('Task recovery could not be saved', 'The Gateway no longer has this run, but this iPhone could not update the task list. Free up device storage and retry from Scheduled Tasks.');
+              }
+            } else if (task?.submissionPending) {
               // The saved task row and local reminder are the fallback; remove
               // only the uncertain Gateway association so Play can run it.
               await useScheduledTasksStore.getState().clearSubmissionPending(task.id).catch(() => {});
@@ -1368,6 +1403,16 @@ export default function SimpleChatScreen() {
           setMessages((previous) => previous.map((message) => message.id === item.assistantMessageId
             ? { ...message, text: rejectionText, streaming: false, queued: false, failed: true }
             : message));
+          if (item.jobId) {
+            await recordChatJobHistory({
+              jobId: item.jobId,
+              conversationId: item.conversationId,
+              assistantMessageId: item.assistantMessageId,
+              status: 'failed',
+              error: rejectionText,
+              completedAt: Date.now(),
+            }).catch(() => {});
+          }
           if (item.conversationId) {
             try {
               if (!savedConversations) savedConversations = await listConversations();
@@ -1420,6 +1465,14 @@ export default function SimpleChatScreen() {
         // task restoration is in flight. Ignore this stale observation so it
         // cannot put a cancelled turn back into the active composer state.
         if (!generationIsCurrent(item.assistantMessageId)) continue;
+        if (['completed', 'failed', 'cancelled', 'dead_letter'].includes(item.state.status)) {
+          // AppState reconciliation can race the original foreground poll.
+          // Let exactly one observer settle this job and send its terminal UI
+          // update/notification.
+          const poll = activeDurablePollsRef.current.get(item.assistantMessageId);
+          if (poll) poll.cancelled = true;
+          activeDurablePollsRef.current.delete(item.assistantMessageId);
+        }
         if (item.state.status === 'completed' && !item.state.text.trim()) {
           const emptyError = item.state.error || 'The Gateway completed this request without returning any text. Start a fresh run.';
           durableJobIdsRef.current.delete(item.assistantMessageId);
@@ -3775,6 +3828,20 @@ export default function SimpleChatScreen() {
         ? { ...message, text: latest.text || latest.error || (latest.status === 'dead_letter' ? 'This request exhausted its retry budget.' : 'The upstream model returned no response. Retry this task or choose another model.'), streaming: false, queued: false, failed: true }
         : message));
       setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'idle', tools: [] } }));
+    }
+    if (Platform.OS === 'ios' && ['queued', 'running', 'paused'].includes(latest.status)) {
+      // The foreground poll budget ended, but the Gateway still owns the job.
+      // Drop the completed polling handle; keep the durable association and
+      // queued UI so Stop/Pause still target the real job and app-foreground
+      // reconciliation can resume observation later.
+      activeDurablePollsRef.current.delete(assistantId);
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: {
+        phase: latest.status === 'paused' ? 'paused' : 'reconnecting',
+        tools: previous[targetConversationId]?.tools || [],
+      } }));
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, ...(latest.text ? { text: latest.text } : {}), streaming: false, queued: true, failed: false }
+        : message));
     }
     return { success: false, text: latest.text || '' };
   }, [session, modelId, conversationId, nextTurnGeneration, releaseConversationSend, markScheduledTaskRunSafely, reconcileDurableJobs, aiDisclosureAccepted]);

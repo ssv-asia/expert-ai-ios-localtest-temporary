@@ -519,6 +519,21 @@ not a claim of parity.
   button rendering and request behavior remain unchanged. TypeScript, Expo lint,
   whitespace, and no-Android-path checks pass for the local change; it has not
   yet been built or exercised on an iPhone.
+- Fixed iOS durable-job reconciliation for Gateway `404` and expired nonterminal
+  job records. These were retained in the local outbox indefinitely and could
+  leave a restored response/task linked to a job the Gateway no longer had.
+  iOS now settles the message as retryable, clears active poll/control state,
+  writes failure history, and unlinks affected scheduled tasks while retaining
+  their local reminder and conversation so Play can start a fresh run. If local
+  task storage fails, the recovery intent is requeued. Terminal reconciliation
+  also cancels a competing foreground poll to prevent stale controls and
+  duplicate terminal notifications. When a bounded foreground poll ends with
+  work still active, iOS now releases the finished poll handle but retains the
+  job association and queued UI so Stop/Pause still control the Gateway job.
+  Android behavior is gated unchanged.
+- The durable-job recovery changes pass `npx tsc --noEmit`, `npx expo lint`,
+  whitespace checks, and the no-Android-path diff check. No iOS native build,
+  Gateway job replay, or physical-device notification test has verified them.
 
 The owner confirmed that this local-test repository is the iOS edit/build target
 and the organization repository is the APK codebase. The APK repository was

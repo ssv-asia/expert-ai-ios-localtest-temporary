@@ -166,6 +166,17 @@ export async function reconcilePendingChatJobs(token: string): Promise<Reconcile
           }
           return { item, state };
         } catch (error) {
+          if (Platform.OS === 'ios' && item.jobId && error instanceof ChatJobRequestError && error.status === 404) {
+            // A known job ID that the Gateway definitively no longer has must
+            // not remain in the iOS outbox forever. Reconciliation will expose
+            // it as a retryable terminal local state and release linked tasks.
+            return {
+              item,
+              state: null,
+              rejected: true as const,
+              rejectionMessage: 'The Gateway no longer has this background job. Retry the request to start a fresh run.',
+            };
+          }
           // A permanent validation rejection cannot turn into an accepted job
           // on retry. Return it to the caller so scheduled work can fall back
           // to its saved local reminder instead of staying stuck forever.
@@ -190,6 +201,16 @@ export async function reconcilePendingChatJobs(token: string): Promise<Reconcile
         // so subsequent launches reconcile by job ID instead of recreating by
         // idempotency key and so the caller receives the recovered state.
         const resolvedItem = item.jobId ? item : { ...item, jobId: state.jobId };
+        const terminal = ['completed', 'failed', 'cancelled', 'dead_letter'].includes(state.status);
+        if (Platform.OS === 'ios' && state.expiresAt <= now && !terminal) {
+          results.push({
+            ...resolvedItem,
+            state: null,
+            rejected: true,
+            rejectionMessage: 'The Gateway retention period for this background job ended before it reached a final result. Retry the request to start a fresh run.',
+          });
+          continue;
+        }
         // Completed jobs are acknowledged below and cancelled jobs are no
         // longer recoverable. Failed jobs must remain locally linked until the
         // user retries or dismisses them; otherwise a process kill between
@@ -198,7 +219,9 @@ export async function reconcilePendingChatJobs(token: string): Promise<Reconcile
         if (['completed', 'failed', 'cancelled', 'dead_letter'].includes(state.status)) {
           await recordHistoryUnsafe({ jobId: resolvedItem.jobId, conversationId: resolvedItem.conversationId, assistantMessageId: resolvedItem.assistantMessageId, status: state.status, textPreview: state.text, error: state.error, completedAt: state.updatedAt });
         }
-        if (state.expiresAt > now) results.push({ ...resolvedItem, state, rejected: false });
+        if (state.expiresAt > now || (Platform.OS === 'ios' && terminal)) {
+          results.push({ ...resolvedItem, state, rejected: false });
+        }
       }
     }
     await writeAll(keep);

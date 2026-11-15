@@ -48,6 +48,7 @@ interface ScheduledTasksState {
   replaceRemoteTask: (id: string, scheduledFor: number, remote: { jobId: string; conversationId: string; assistantMessageId?: string; prompt?: string }) => Promise<void>;
   markSubmissionPending: (id: string, run: { conversationId: string; assistantMessageId: string }) => Promise<void>;
   clearSubmissionPending: (id: string) => Promise<void>;
+  markRemoteJobLost: (id: string, reason: string) => Promise<void>;
   markRun: (id: string, status: 'completed' | 'failed' | 'exhausted', resultPreview?: string, run?: { conversationId?: string; assistantMessageId?: string }) => Promise<void>;
   markPending: (id: string) => Promise<void>;
   removeTask: (id: string) => Promise<void>;
@@ -393,6 +394,27 @@ export const useScheduledTasksStore = create<ScheduledTasksState>((set, get) => 
       const previousTasks = get().tasks;
       const tasks = previousTasks.map((task) => task.id === id
         ? { ...task, submissionPending: false, conversationId: undefined, assistantMessageId: undefined }
+        : task);
+      set({ tasks });
+      try {
+        await persistTasks(tasks);
+      } catch (error) {
+        set({ tasks: previousTasks });
+        throw error;
+      }
+    },
+
+    markRemoteJobLost: async (id, reason) => {
+      const previousTasks = get().tasks;
+      const tasks = previousTasks.map((task) => task.id === id
+        ? {
+            ...task,
+            status: 'failed' as const,
+            submissionPending: false,
+            jobId: undefined,
+            lastRunAt: Date.now(),
+            lastResultPreview: reason.slice(0, 160),
+          }
         : task);
       set({ tasks });
       try {
