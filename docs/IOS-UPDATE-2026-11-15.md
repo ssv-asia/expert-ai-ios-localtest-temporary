@@ -1,0 +1,82 @@
+# iOS migration update — 15 November 2026
+
+## Scope and source
+
+- This update is in the iOS-only local test repository, on
+  `codex/ios-platform-fixes-20261114`.
+- The APK repository was not modified. Gateway routes and tool schemas remain
+  Gateway-owned; the client does not hardcode slash-command tool names.
+- Latest source commit before this update: `9808ae6` (`Refresh stale iOS
+  handoff jobs`).
+
+## Finished in this update
+
+- Trial sign-in uses the shared Gateway `/auth/trial` → `/auth/poll` flow,
+  validates the returned nonce/expiry/auth URL, only caches a session after
+  secure persistence succeeds, retries an expired trial once, and gives a
+  useful error for an incomplete Gateway response.
+- The iOS trial button has progress feedback and blocks duplicate starts while
+  the request is in flight. The button still requires device/Gateway acceptance
+  testing; source checks do not prove the live trial contract works.
+- iOS durable jobs now reconcile missing/expired Gateway jobs, recover task
+  reruns, classify empty completed jobs as failures with an explicit retry,
+  keep controls associated with the correct conversation, and reconcile a
+  missing desktop-handoff job rather than leaving a stale action.
+- iOS task reminders, push-token handling, notification-tap routing, local
+  persistence recovery, `/doc` context/edit flow, and `/note` local daily-note
+  behavior are documented in `IOS-APK-PARITY-HANDOFF.md`; these need physical
+  device acceptance against the live Gateway/APNs setup.
+- Latest recorded local static checks (before this documentation update):
+  `npx tsc --noEmit`, `npx expo lint`, and Git whitespace checks passed. No
+  native build or physical-device verification was run for those source
+  changes.
+
+## Build requested
+
+The intended artifact is an unsigned, arm64 iOS test IPA from GitHub Actions,
+bundle ID `com.local.expertai`, for signing/sideloading by the owner. It is not
+an App Store signed build. The workflow must build the exact pushed commit and
+the IPA must be downloaded and validated before being called ready to install.
+
+Workflow prerequisite: GitHub repository variable
+`EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID` for `com.local.expertai`. The
+owner confirms Google OAuth is available, but GitHub Actions variable presence
+and value cannot be read from this checkout. GitHub Actions must confirm it at
+run time. The code also has an optional GitHub OAuth client variable.
+
+## Still pending / release limits
+
+- **Trial button:** test on an iPhone with the live Gateway; capture the actual
+  `/auth/trial` response/status and confirm poll, secure session save, and
+  subsequent authenticated request. If the Gateway contract differs, align
+  the client to that contract; do not invent a route.
+- **Google sign-in:** confirm the local-test OAuth client variable is set and
+  test account selection, callback scheme, Gateway token verification, and
+  sign-out on device. Confirm production OAuth configuration separately.
+- **GitHub sign-in:** the user reports provider setup exists; verify its
+  iOS-specific callback/configuration and real Gateway exchange before release.
+- **Apple sign-in and subscriptions:** Apple Developer membership/configuration
+  is pending the owner. Do not claim App Store readiness. Implement Apple
+  sign-in and StoreKit purchase/restore with Gateway receipt verification once
+  the required Apple team, identifiers, products, and server contract are
+  available.
+- **Notifications and scheduled tasks:** validate local due reminders, remote
+  completion push, permissions, cold/warm taps, task retry, and pause/stop on
+  device. APNs/Gateway configuration and the earlier empty upstream generation
+  report remain unverified.
+- **Parity flows:** run the physical-device smoke checklist for chat, Stop/
+  Pause/Resume, new chat, `/doc` open/edit/review/commit, `/note`, Gateway tool
+  calls, scheduled conversational tasks, desktop handoff, attachments, voice,
+  auth, and iPad layout. Compare expected behavior to the APK without editing
+  its repository.
+- **Store publication:** production bundle ID/team, signed archive, App Store
+  Connect record, Apple sign-in, StoreKit, privacy-policy/data-retention
+  reconciliation, account deletion, listing assets, and review remain open.
+
+## Artifact status
+
+No IPA from the latest source is verified or available at the time this note was
+written. Update this section only after checking the GitHub run, commit SHA,
+artifact contents, IPA checksum, metadata, and download location. An unsigned
+IPA requires a compatible signing/sideloading flow; it cannot be installed by
+itself as a signed App Store package.
