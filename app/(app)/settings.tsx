@@ -239,7 +239,11 @@ function MemorySection({ isDark, textPrimary, textMuted }: { isDark: boolean; te
 function RecipesSection({ isDark, textPrimary, textMuted }: { isDark: boolean; textPrimary: string; textMuted: string }) {
   const router = useRouter();
   const [recipes, setRecipes] = useState<AutomationRecipe[]>([]);
-  const reload = useCallback(() => { listAutomationRecipes().then(setRecipes).catch(() => {}); }, []);
+  const reload = useCallback(() => {
+    listAutomationRecipes().then(setRecipes).catch((error) => {
+      if (Platform.OS === 'ios') Alert.alert('Workflows unavailable', error instanceof Error ? error.message : 'Saved workflows could not be loaded.');
+    });
+  }, []);
   useEffect(() => { reload(); }, [reload]);
   if (!recipes.length) return null;
   return (
@@ -250,7 +254,14 @@ function RecipesSection({ isDark, textPrimary, textMuted }: { isDark: boolean; t
           <Text numberOfLines={2} style={{ color: textMuted, fontSize: 12, marginTop: 3 }}>{recipe.prompt}</Text>
           <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
             <Pressable onPress={() => router.push({ pathname: '/simple-chat', params: { recipePrompt: recipe.prompt } })}><Text style={{ color: textPrimary, fontSize: 12 }}>Run</Text></Pressable>
-            <Pressable onPress={() => Alert.alert('Delete recipe?', 'This removes the saved workflow from this device.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => { await deleteAutomationRecipe(recipe.id); reload(); } }])}><Text style={{ color: '#c95757', fontSize: 12 }}>Delete</Text></Pressable>
+            <Pressable onPress={() => Alert.alert('Delete recipe?', 'This removes the saved workflow from this device.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => {
+              try {
+                await deleteAutomationRecipe(recipe.id);
+                reload();
+              } catch (error) {
+                Alert.alert('Workflow not deleted', error instanceof Error ? error.message : 'The saved workflow could not be deleted. Please try again.');
+              }
+            } }])}><Text style={{ color: '#c95757', fontSize: 12 }}>Delete</Text></Pressable>
           </View>
         </View>
       ))}

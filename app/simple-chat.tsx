@@ -5328,11 +5328,15 @@ export default function SimpleChatScreen() {
 
   const handleSaveRecipe = useCallback((text: string) => {
     const save = async (name: string) => {
-      await saveAutomationRecipe(name, text);
-      Alert.alert('Workflow saved', 'This workflow is now available in Settings.', [
-        { text: 'Done', style: 'cancel' },
-        { text: 'Open Settings', onPress: () => router.push('/(app)/settings') },
-      ]);
+      try {
+        await saveAutomationRecipe(name, text);
+        Alert.alert('Workflow saved', 'This workflow is now available in Settings.', [
+          { text: 'Done', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => router.push('/(app)/settings') },
+        ]);
+      } catch (error) {
+        Alert.alert('Workflow not saved', error instanceof Error ? error.message : 'This workflow could not be saved on this device. Please try again.');
+      }
     };
     if (Platform.OS === 'ios') Alert.prompt('Save automation recipe', 'Give this reusable workflow a name.', (name) => { if (name?.trim()) void save(name); }, 'plain-text', 'Research summary');
     else void save('Saved workflow');

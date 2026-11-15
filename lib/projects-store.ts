@@ -30,19 +30,57 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${projectsPath}.tmp`;
+    const backupPath = `${projectsPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(projectsPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(projectsPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: projectsPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(projectsPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: projectsPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(projectsPath, value);
 }
 
 async function readAll(): Promise<Project[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) throw new Error('Saved projects have an invalid format.');
-    cache = parsed;
-  } catch (error) {
-    if (Platform.OS === 'ios') throw error;
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [projectsPath, `${projectsPath}.bak`, `${projectsPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== projectsPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${projectsPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(projectsPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${projectsPath}.tmp`, to: projectsPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
+    }
+    if (foundSnapshot) throw new Error('No valid saved projects snapshot found.');
     cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved projects have an invalid format.');
+      cache = parsed;
+    } catch { cache = []; }
   }
   return cache;
 }
@@ -50,7 +88,12 @@ async function readAll(): Promise<Project[]> {
 async function writeAll(projects: Project[]): Promise<void> {
   const operation = writeChain.then(async () => {
     if (Platform.OS === 'ios') {
-      await writeKey(JSON.stringify(projects));
+      try {
+        await writeKey(JSON.stringify(projects));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${projectsPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
       cache = projects;
       return;
     }

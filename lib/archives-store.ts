@@ -37,19 +37,57 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${archivesPath}.tmp`;
+    const backupPath = `${archivesPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(archivesPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(archivesPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: archivesPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(archivesPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: archivesPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(archivesPath, value);
 }
 
 async function readAll(): Promise<Archive[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) throw new Error('Saved archives have an invalid format.');
-    cache = parsed;
-  } catch (error) {
-    if (Platform.OS === 'ios') throw error;
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [archivesPath, `${archivesPath}.bak`, `${archivesPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== archivesPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${archivesPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(archivesPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${archivesPath}.tmp`, to: archivesPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
+    }
+    if (foundSnapshot) throw new Error('No valid saved archives snapshot found.');
     cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved archives have an invalid format.');
+      cache = parsed;
+    } catch { cache = []; }
   }
   return cache;
 }
@@ -57,7 +95,12 @@ async function readAll(): Promise<Archive[]> {
 async function writeAll(archives: Archive[]): Promise<void> {
   const operation = writeChain.then(async () => {
     if (Platform.OS === 'ios') {
-      await writeKey(JSON.stringify(archives));
+      try {
+        await writeKey(JSON.stringify(archives));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${archivesPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
       cache = archives;
       return;
     }

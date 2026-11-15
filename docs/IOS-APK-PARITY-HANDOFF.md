@@ -191,6 +191,11 @@ working actions.
   planner surfaces. Surface local project, archive, document, chat-history,
   theme, notification-preference, and canvas storage errors rather than
   silently replacing saved data with an empty list or reporting success.
+- Make iOS archive, project, saved-document, and automation-recipe snapshots
+  atomic with a temporary file and a last-known-good backup. Recover a valid
+  backup when the primary JSON is damaged, preserve the last in-memory value
+  on write failure, and surface recipe load/save/delete errors. These recovery
+  writes are iOS-only; Android retains its existing persistence behavior.
 - Move the iOS scheduled-task list off SecureStore's small per-item size limit
   using an atomic file snapshot, backup recovery, and one-time migration from
   the existing SecureStore key; Android and web retain their existing storage.

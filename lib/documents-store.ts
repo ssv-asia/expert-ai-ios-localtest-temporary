@@ -43,23 +43,59 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${documentsPath}.tmp`;
+    const backupPath = `${documentsPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(documentsPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(documentsPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: documentsPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(documentsPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: documentsPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(documentsPath, value);
 }
 
 async function readAll(): Promise<StoredDocument[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    if (!Array.isArray(parsed)) throw new Error('Saved documents have an invalid format.');
-    cache = parsed;
-  } catch (error) {
-    if (cache) return cache;
-    if (Platform.OS !== 'ios') {
-      cache = [];
-      return cache;
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [documentsPath, `${documentsPath}.bak`, `${documentsPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== documentsPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${documentsPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(documentsPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${documentsPath}.tmp`, to: documentsPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
     }
-    throw error;
+    if (foundSnapshot) throw new Error('No valid saved documents snapshot found.');
+    cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved documents have an invalid format.');
+      cache = parsed;
+    } catch {
+      cache = [];
+    }
   }
   return cache;
 }
@@ -71,7 +107,12 @@ async function writeAll(docs: StoredDocument[]): Promise<void> {
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, MAX_DOCUMENTS);
     if (Platform.OS === 'ios') {
-      await writeKey(JSON.stringify(bounded));
+      try {
+        await writeKey(JSON.stringify(bounded));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${documentsPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
       cache = bounded;
     } else {
       cache = bounded;
