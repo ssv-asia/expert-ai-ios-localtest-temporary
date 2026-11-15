@@ -17,11 +17,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Require Google iOS OAuth configuration
+      - name: Report Google iOS OAuth configuration
         run: |
           if [ -z "$EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID" ]; then
-            echo "EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID must be set as a repository variable for bundle ID com.local.expertai so the iOS Google sign-in button and URL scheme are included."
-            exit 1
+            echo "Google sign-in will be omitted from this local-test IPA: no iOS OAuth client is configured for bundle ID com.local.expertai. Email and trial sign-in remain available."
+          else
+            echo "Google iOS OAuth client is configured for the local-test IPA."
           fi
 
       - uses: actions/setup-node@v4
@@ -62,9 +63,9 @@ jobs:
           const clientPrefix = clientId?.match(/^([A-Za-z0-9-]+)\.apps\.googleusercontent\.com$/)?.[1];
           const share = config.extra?.eas?.build?.experimental?.ios?.appExtensions?.find((item) => item.targetName === 'ShareExtension');
           if (config.ios?.bundleIdentifier !== 'com.local.expertai') throw new Error('Unexpected local-test bundle identifier.');
-          if (!clientPrefix) throw new Error('Invalid local-test Google iOS OAuth client ID.');
           const plist = fs.readFileSync('ios/ExpertAI/Info.plist', 'utf8');
-          if (!plist.includes(`<string>com.googleusercontent.apps.${clientPrefix}</string>`)) throw new Error('Generated iOS Info.plist is missing the Google OAuth callback URL scheme.');
+          if (clientId && !clientPrefix) throw new Error('Invalid local-test Google iOS OAuth client ID.');
+          if (clientPrefix && !plist.includes(`<string>com.googleusercontent.apps.${clientPrefix}</string>`)) throw new Error('Generated iOS Info.plist is missing the Google OAuth callback URL scheme.');
           if (!share || share.bundleIdentifier !== 'com.local.expertai.share-extension') throw new Error('Share Extension is not configured for the local-test bundle identifier.');
           if (share.entitlements?.['com.apple.security.application-groups']?.[0] !== 'group.com.local.expertai') throw new Error('Share Extension app group does not match the local-test app.');
           const appTarget = projectText.match(/([A-F0-9]{24}) \/\* ExpertAI \*\/ = \{\s*isa = PBXNativeTarget;[\s\S]*?dependencies = \(([\s\S]*?)\);/);

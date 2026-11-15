@@ -27,9 +27,6 @@ if (productionBuild && localTestBuild) {
 if (productionBuild && isIosBuild && apsEnvironment !== 'production') {
   throw new Error('EAS production builds must use the production APNs entitlement.');
 }
-if (localTestBuild && isIosBuild && !iosGoogleClientId) {
-  throw new Error('EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID is required for the com.local.expertai local-test build.');
-}
 if (productionBuild && isIosBuild && !iosGoogleClientId) {
   throw new Error('EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID is required for production iOS builds so the configured Google sign-in option is present.');
 }

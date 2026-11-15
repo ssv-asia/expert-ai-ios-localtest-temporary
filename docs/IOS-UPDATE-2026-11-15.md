@@ -38,11 +38,24 @@ bundle ID `com.local.expertai`, for signing/sideloading by the owner. It is not
 an App Store signed build. The workflow must build the exact pushed commit and
 the IPA must be downloaded and validated before being called ready to install.
 
-Workflow prerequisite: GitHub repository variable
-`EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID` for `com.local.expertai`. The
-owner confirms Google OAuth is available, but GitHub Actions variable presence
-and value cannot be read from this checkout. GitHub Actions must confirm it at
-run time. The code also has an optional GitHub OAuth client variable.
+The owner confirms Android Google OAuth is configured, but no production iOS
+bundle ID has been registered with Apple. The unsigned test build uses the
+temporary identifier `com.local.expertai`; this does not require Apple Developer
+registration. Google sign-in can still work in that test build if Google Cloud
+has a separate OAuth client of type **iOS** registered with bundle ID
+`com.local.expertai`; an Apple Developer account is not required for that
+Google Cloud OAuth configuration. Without this client, Google sign-in is
+omitted from the test IPA. The existing email and no-signup trial flows remain
+available. To enable Google, provide the iOS OAuth client as the GitHub
+repository variable
+`EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID`. Do not reuse an Android OAuth
+client or insert a placeholder. The workflow now allows this explicitly
+limited local-test build and checks the URL scheme when a real ID is supplied.
+
+GitHub run `43710206601` for commit `1746463c9fa0ec2dc3a597438859f9e9a228abbe`
+failed at its former Google-variable precheck before installing dependencies;
+it produced no IPA. The workflow has since been updated to allow the
+unconfigured-provider test build. Record the next run and artifact below.
 
 ## Still pending / release limits
 
@@ -52,7 +65,8 @@ run time. The code also has an optional GitHub OAuth client variable.
   the client to that contract; do not invent a route.
 - **Google sign-in:** confirm the local-test OAuth client variable is set and
   test account selection, callback scheme, Gateway token verification, and
-  sign-out on device. Confirm production OAuth configuration separately.
+  sign-out on device. Confirm production bundle registration and OAuth
+  configuration separately.
 - **GitHub sign-in:** the user reports provider setup exists; verify its
   iOS-specific callback/configuration and real Gateway exchange before release.
 - **Apple sign-in and subscriptions:** Apple Developer membership/configuration
