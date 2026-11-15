@@ -12,17 +12,16 @@ jobs:
     env:
       EXPO_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GITHUB_CLIENT_ID }}
       EXPERT_AI_LOCALTEST_BUILD: "true"
-      EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID }}
+      EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID || '1093163336745-1m9gq2ka957532pd75mr339kltu8muop.apps.googleusercontent.com' }}
       SENTRY_DISABLE_AUTO_UPLOAD: "true"
     steps:
       - uses: actions/checkout@v4
 
-      - name: Report Google iOS OAuth configuration
+      - name: Require Google iOS OAuth configuration
         run: |
           if [ -z "$EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID" ]; then
-            echo "Google sign-in will be omitted from this local-test IPA: no iOS OAuth client is configured for bundle ID com.local.expertai. Email and trial sign-in remain available."
-          else
-            echo "Google iOS OAuth client is configured for the local-test IPA."
+            echo "EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID is required for the Google-enabled local-test IPA."
+            exit 1
           fi
 
       - uses: actions/setup-node@v4

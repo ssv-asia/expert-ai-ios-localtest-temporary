@@ -38,24 +38,21 @@ bundle ID `com.local.expertai`, for signing/sideloading by the owner. It is not
 an App Store signed build. The workflow must build the exact pushed commit and
 the IPA must be downloaded and validated before being called ready to install.
 
-The owner confirms Android Google OAuth is configured, but no production iOS
-bundle ID has been registered with Apple. The unsigned test build uses the
-temporary identifier `com.local.expertai`; this does not require Apple Developer
-registration. Google sign-in can still work in that test build if Google Cloud
-has a separate OAuth client of type **iOS** registered with bundle ID
-`com.local.expertai`; an Apple Developer account is not required for that
-Google Cloud OAuth configuration. Without this client, Google sign-in is
-omitted from the test IPA. The existing email and no-signup trial flows remain
-available. To enable Google, provide the iOS OAuth client as the GitHub
-repository variable
-`EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID`. Do not reuse an Android OAuth
-client or insert a placeholder. The workflow now allows this explicitly
-limited local-test build and checks the URL scheme when a real ID is supplied.
+The owner confirms Android Google OAuth is configured, and has now supplied an
+iOS OAuth client ID for the test bundle `com.local.expertai`. This unsigned
+test bundle does not require Apple Developer registration. The workflow uses
+the provided Google iOS client ID (with the repository variable available to
+override it) and verifies that the generated iOS URL scheme matches. The
+production iOS bundle ID and production Google client remain separate release
+configuration tasks. Do not reuse an Android OAuth client or add a client
+secret to the repository.
 
 GitHub run `43710206601` for commit `1746463c9fa0ec2dc3a597438859f9e9a228abbe`
-failed at its former Google-variable precheck before installing dependencies;
-it produced no IPA. The workflow has since been updated to allow the
-unconfigured-provider test build. Record the next run and artifact below.
+failed at the missing-client precheck before installing dependencies; it
+produced no IPA. Run `43710702384` for `71ac9a1` was cancelled after its
+no-Google configuration had passed the initial build checks. A replacement
+run with the owner's iOS client ID is being started. Record its result and
+artifact below.
 
 ## Still pending / release limits
 
@@ -63,10 +60,9 @@ unconfigured-provider test build. Record the next run and artifact below.
   `/auth/trial` response/status and confirm poll, secure session save, and
   subsequent authenticated request. If the Gateway contract differs, align
   the client to that contract; do not invent a route.
-- **Google sign-in:** confirm the local-test OAuth client variable is set and
-  test account selection, callback scheme, Gateway token verification, and
-  sign-out on device. Confirm production bundle registration and OAuth
-  configuration separately.
+- **Google sign-in:** test account selection, callback scheme, Gateway token
+  verification, and sign-out on device. Confirm production bundle registration
+  and OAuth configuration separately.
 - **GitHub sign-in:** the user reports provider setup exists; verify its
   iOS-specific callback/configuration and real Gateway exchange before release.
 - **Apple sign-in and subscriptions:** Apple Developer membership/configuration
