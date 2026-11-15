@@ -851,7 +851,10 @@ export async function deleteAccount(token: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     },
-    { attemptTimeoutMs: 15000, retries: 2 },
+    // Account deletion is destructive and has no idempotency key. A timeout
+    // can happen after the Gateway has deleted the account, so never replay
+    // this POST automatically against either origin.
+    { attemptTimeoutMs: 15000, retries: 0 },
   );
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
