@@ -4380,9 +4380,15 @@ export default function SimpleChatScreen() {
       await Clipboard.setStringAsync(invitation.token);
       Alert.alert('Desktop handoff ready', `Job ID: ${job.jobId}\n\nThe five-minute invitation was copied to your clipboard. Paste it into the paired desktop Expert AI session and enter the Job ID above. No transcript content was copied.`);
     } catch (error) {
+      if (error instanceof ChatJobRequestError && error.status === 404) {
+        // A handoff can race the Gateway's retention window. Reconcile the
+        // original job so the composer does not keep presenting controls for
+        // work the Gateway has already removed.
+        void reconcileDurableJobs().catch(() => {});
+      }
       Alert.alert('Handoff unavailable', error instanceof Error ? error.message : 'Could not prepare the desktop handoff.');
     }
-  }, [session, conversationId]);
+  }, [session, conversationId, reconcileDurableJobs]);
 
   const scheduledTasksLoaded = useScheduledTasksStore((s) => s.loaded);
   const loadScheduledTasks = useScheduledTasksStore((s) => s.load);

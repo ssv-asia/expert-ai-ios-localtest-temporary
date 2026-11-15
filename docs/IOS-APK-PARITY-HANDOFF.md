@@ -534,6 +534,21 @@ not a claim of parity.
 - The durable-job recovery changes pass `npx tsc --noEmit`, `npx expo lint`,
   whitespace checks, and the no-Android-path diff check. No iOS native build,
   Gateway job replay, or physical-device notification test has verified them.
+- Account and commerce audit confirms that iOS currently shows an explicit
+  “Plan purchases and subscription restore are not available” message. The
+  repository contains Google Play verification only (`verifyGooglePlaySubscription`);
+  it has no StoreKit purchase implementation or Apple transaction-validation
+  Gateway method. This is a public-release gap, not a client-only button fix.
+  Apple’s current [3.1.1/3.1.2 and 3.1.3(b) rules](https://developer.apple.com/app-store/review/guidelines/)
+  generally require IAP for digital subscriptions/features and require a
+  multiplatform service to offer IAP in the app when it also lets users access
+  purchases from other platforms. Region-specific entitlements may change the
+  allowed purchase flow; owner/App Store Connect configuration is required.
+- The same current Apple guideline page says an app using Google as a primary
+  sign-in option must offer an equivalent qualifying privacy-preserving login
+  unless an enumerated exception applies. The app is not email-only, so Apple
+  sign-in remains a submission gate; Gateway identity-token validation is not
+  present in this client contract.
 
 The owner confirmed that this local-test repository is the iOS edit/build target
 and the organization repository is the APK codebase. The APK repository was
