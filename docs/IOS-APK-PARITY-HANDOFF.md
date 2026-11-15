@@ -483,9 +483,9 @@ and the organization repository is the APK codebase. The APK repository was
 reviewed read-only for parity; it was not modified. Future Android sessions can
 use this iOS repository as a behavioral reference.
 
-- Latest pushed iOS commit before this continuation: `488324e` on
-  `codex/ios-platform-fixes-20261114`. The continuation changes below are local
-  until their current diff is reviewed and committed.
+- Latest pushed iOS commit at this handoff: `6ae9df3` on
+  `codex/ios-platform-fixes-20261114`. The reviewed continuation changes are
+  committed and pushed.
 - This continuation makes iOS archive, project, document, and automation-recipe
   file snapshots recoverable through primary, backup, and completed temporary
   JSON files; it serializes read-modify-write operations to prevent concurrent
@@ -507,7 +507,14 @@ use this iOS repository as a behavioral reference.
   The local `gh` token is invalid. The IPA workflow is still
   `workflow_dispatch`-only, requires repository variable
   `EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID`, and its presence could not be
-  verified through the connected GitHub read-only tools.
+  verified through the connected GitHub read-only tools. A path-only scan found
+  no common GitHub/AWS/private-key/Expo/Sentry credential formats and no tracked
+  `.env` or signing-certificate files; a generic scanner hit in Yarn's bundled
+  release code was excluded as a false positive.
+- GitHub Actions history currently ends at run 8 for old commit
+  `87cf3614682153b642ffe816463959f026e0cc78` (cancelled during CocoaPods) and
+  run 7 for older commit `1431940213382abc3616182c7c8f810c8d084362` (successful
+  IPA upload). There is no run for `6ae9df3`; no build is active or pending.
 - No build is running. No IPA for current source exists. Remaining external
   requirements include the real Google iOS OAuth registration/configuration,
   Gateway Apple identity-token validation before an Apple sign-in client can be
