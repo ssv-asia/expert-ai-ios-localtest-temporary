@@ -4,7 +4,7 @@
 // into the chat screen as an editable, AI-editable document — this panel's
 // job ends at "here's the file the user picked."
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ActivityIndicator, Alert, Linking, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
+import { ActivityIndicator, Alert, Linking, Platform, Pressable, RefreshControl, ScrollView, Text, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { Fonts } from '@/constants/theme';
@@ -61,6 +61,7 @@ export function GithubPanel({
 }) {
   const [screen, setScreen] = useState<Screen>({ name: 'archives' });
   const [archives, setArchives] = useState<Archive[]>([]);
+  const [archivesError, setArchivesError] = useState<string | null>(null);
   const [connected, setConnected] = useState(false);
 
   const [addUrlOpen, setAddUrlOpen] = useState(false);
@@ -87,7 +88,13 @@ export function GithubPanel({
   const [renameName, setRenameName] = useState('');
 
   const refresh = useCallback(() => {
-    listArchives().then(setArchives).catch(() => setArchives([]));
+    if (Platform.OS === 'ios') {
+      listArchives().then((items) => { setArchives(items); setArchivesError(null); }).catch((err) => {
+        setArchivesError(err instanceof Error ? err.message : 'Saved archives could not be loaded.');
+      });
+    } else {
+      listArchives().then(setArchives).catch(() => setArchives([]));
+    }
     getGithubToken().then((t) => setConnected(!!t));
   }, []);
 
@@ -138,9 +145,10 @@ export function GithubPanel({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [screen.name === 'browse' ? screen.archive.id : null, screen.name === 'browse' ? screen.path : null]);
 
+  const historyArchive = screen.name === 'history' ? screen.archive : null;
   useEffect(() => {
-    if (screen.name === 'history') loadHistory(screen.archive);
-  }, [screen.name === 'history' ? screen.archive.id : null, loadHistory]);
+    if (historyArchive) loadHistory(historyArchive);
+  }, [historyArchive, loadHistory]);
 
   const handleAddByUrl = useCallback(async () => {
     const repoFullName = parseRepoFullName(urlInput);
@@ -245,7 +253,15 @@ export function GithubPanel({
   const handleRemoveArchive = useCallback((archive: Archive) => {
     Alert.alert('Remove archive', `Remove "${archive.name}"? The repo itself is untouched.`, [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Remove', style: 'destructive', onPress: async () => { await removeArchive(archive.id); refresh(); } },
+      { text: 'Remove', style: 'destructive', onPress: async () => {
+        if (Platform.OS !== 'ios') {
+          await removeArchive(archive.id);
+          refresh();
+          return;
+        }
+        try { await removeArchive(archive.id); refresh(); }
+        catch (err) { Alert.alert('Could not remove archive', err instanceof Error ? err.message : 'Please try again.'); }
+      } },
     ]);
   }, [refresh]);
 
@@ -304,6 +320,7 @@ export function GithubPanel({
         <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: colors.textTertiary ?? colors.textSecondary, lineHeight: 16 }}>
           Public archives can be read without sign-in. Editing is local until you commit; GitHub only accepts a commit when your account has write access to that repository.
         </Text>
+        {Platform.OS === 'ios' && archivesError ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, fontSize: 12, color: '#FF3B30' }}>{archivesError}</Text> : null}
 
         {device ? (
           <View style={{ backgroundColor: colors.background, borderRadius: 12, padding: 16, borderWidth: 1, borderColor: colors.border, gap: 10, alignItems: 'center' }}>

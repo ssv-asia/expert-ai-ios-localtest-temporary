@@ -45,8 +45,10 @@ async function readAll(): Promise<Archive[]> {
   try {
     const raw = await readKey();
     const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) throw new Error('Saved archives have an invalid format.');
+    cache = parsed;
+  } catch (error) {
+    if (Platform.OS === 'ios') throw error;
     cache = [];
   }
   return cache;
@@ -54,12 +56,13 @@ async function readAll(): Promise<Archive[]> {
 
 async function writeAll(archives: Archive[]): Promise<void> {
   const operation = writeChain.then(async () => {
-    cache = archives;
-    try {
+    if (Platform.OS === 'ios') {
       await writeKey(JSON.stringify(archives));
-    } catch {
-      /* best-effort */
+      cache = archives;
+      return;
     }
+    cache = archives;
+    try { await writeKey(JSON.stringify(archives)); } catch { /* preserve existing best-effort behavior */ }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
   await operation;
@@ -75,7 +78,7 @@ export function makeArchiveId(): string {
 }
 
 export async function addArchive(name: string, repoFullName: string): Promise<Archive> {
-  const all = await readAll();
+  const all = [...await readAll()];
   if (all.some((a) => a.repoFullName.toLowerCase() === repoFullName.toLowerCase())) {
     throw new Error('This repository is already connected as an archive.');
   }
@@ -86,7 +89,7 @@ export async function addArchive(name: string, repoFullName: string): Promise<Ar
 }
 
 export async function removeArchive(id: string): Promise<void> {
-  const all = await readAll();
+  const all = [...await readAll()];
   await writeAll(all.filter((a) => a.id !== id));
 }
 

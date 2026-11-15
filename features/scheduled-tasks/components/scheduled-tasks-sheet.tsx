@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Fonts } from '@/constants/theme';
@@ -13,6 +13,7 @@ interface ThemeColors {
   sheetBackground: string;
   sheetHandle: string;
   border: string;
+  accent: string;
 }
 
 interface ScheduledTasksSheetProps {
@@ -22,7 +23,8 @@ interface ScheduledTasksSheetProps {
   onClose: () => void;
   onOpenScheduleNew: () => void;
   onRunTask: (task: ScheduledTask) => void;
-  onRescheduleRemote?: (task: ScheduledTask, scheduledFor: number) => Promise<void>;
+  onRescheduleRemote?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
+  onReplaceRemoteTask?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
   /** Switch to the Daily notes "tab" — omit to hide the segmented control. */
   onSwitchToNotes?: () => void;
 }
@@ -56,9 +58,9 @@ function TaskRow({
   canReschedule: boolean;
   onDelete: () => void;
 }) {
-  const isDue = task.status === 'pending' && task.scheduledFor <= Date.now();
-  const badgeColor = task.status === 'completed' ? '#34C759' : task.status === 'failed' || task.status === 'exhausted' ? '#FF3B30' : isDue ? '#FF9500' : colors.textTertiary;
-  const badgeLabel = task.status === 'completed' ? 'Done' : task.status === 'exhausted' ? 'Retry limit' : task.status === 'failed' ? 'Failed' : isDue ? 'Due now' : 'Scheduled';
+  const isDue = task.status === 'pending' && !task.submissionPending && task.scheduledFor <= Date.now();
+  const badgeColor = task.submissionPending ? colors.accent : task.status === 'completed' ? '#34C759' : task.status === 'failed' || (Platform.OS === 'ios' && task.status === 'exhausted') ? '#FF3B30' : isDue ? '#FF9500' : colors.textTertiary;
+  const badgeLabel = task.submissionPending ? 'Checking status' : task.status === 'completed' ? 'Done' : Platform.OS === 'ios' && task.status === 'exhausted' ? 'Needs restart' : task.status === 'failed' ? 'Failed' : isDue ? 'Due now' : 'Scheduled';
 
   return (
     <View style={[styles.row, { borderColor: colors.border }]}>
@@ -71,9 +73,14 @@ function TaskRow({
             <Text style={[styles.badgeText, { color: badgeColor }]}>{badgeLabel}</Text>
           </View>
           <Text style={[styles.rowMeta, { color: colors.textTertiary }]}>
-            {task.status === 'pending' ? formatWhen(task.scheduledFor) : task.lastRunAt ? `Ran ${formatWhen(task.lastRunAt)}` : ''}
+            {task.submissionPending ? 'Checking Gateway acceptance…' : task.status === 'pending' ? formatWhen(task.scheduledFor) : task.lastRunAt ? `Ran ${formatWhen(task.lastRunAt)}` : ''}
           </Text>
         </View>
+        {Platform.OS === 'ios' && task.status === 'pending' && !task.submissionPending && !task.reminderId ? (
+          <Text style={[styles.resultPreview, { color: '#C48A2D' }]} numberOfLines={2}>
+            No iPhone reminder was saved. Check notification permission or run this task manually.
+          </Text>
+        ) : null}
         {task.lastResultPreview ? (
           <Text style={[styles.resultPreview, { color: colors.textSecondary }]} numberOfLines={2}>
             {task.lastResultPreview}
@@ -81,13 +88,13 @@ function TaskRow({
         ) : null}
       </View>
       <View style={styles.rowActions}>
-        <Pressable onPress={onRun} hitSlop={8} style={styles.rowActionBtn}>
-          <Ionicons name="play-circle-outline" size={22} color={colors.text} />
+        <Pressable onPress={onRun} hitSlop={8} {...(Platform.OS === 'ios' ? { accessibilityRole: 'button' as const, accessibilityLabel: task.submissionPending ? 'Check scheduled task submission status' : 'Run scheduled task' } : {})} style={styles.rowActionBtn}>
+          <Ionicons name={task.submissionPending ? 'refresh-outline' : 'play-circle-outline'} size={22} color={colors.text} />
         </Pressable>
-        <Pressable onPress={onReschedule} disabled={!canReschedule} hitSlop={8} style={styles.rowActionBtn}>
+        <Pressable onPress={onReschedule} disabled={!canReschedule || task.submissionPending} hitSlop={8} style={styles.rowActionBtn}>
           <Ionicons name="time-outline" size={20} color={canReschedule ? colors.text : colors.textTertiary} />
         </Pressable>
-        <Pressable onPress={onDelete} hitSlop={8} style={styles.rowActionBtn}>
+        <Pressable onPress={onDelete} disabled={!!task.submissionPending} hitSlop={8} style={[styles.rowActionBtn, { opacity: task.submissionPending ? 0.4 : 1 }]}>
           <Ionicons name="trash-outline" size={19} color="#FF3B30" />
         </Pressable>
       </View>
@@ -95,8 +102,8 @@ function TaskRow({
   );
 }
 
-export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenScheduleNew, onRunTask, onRescheduleRemote, onSwitchToNotes }: ScheduledTasksSheetProps) {
-  const { tasks, loaded, load, rescheduleTask, removeTask } = useScheduledTasksStore();
+export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenScheduleNew, onRunTask, onRescheduleRemote, onReplaceRemoteTask, onSwitchToNotes }: ScheduledTasksSheetProps) {
+  const { tasks, loaded, load, persistenceError, retryPersistence, rescheduleTask, removeTask } = useScheduledTasksStore();
   const [rescheduling, setRescheduling] = useState<ScheduledTask | null>(null);
 
   useEffect(() => {
@@ -105,6 +112,16 @@ export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenSc
 
   const pending = tasks.filter((t) => t.status === 'pending').sort((a, b) => a.scheduledFor - b.scheduledFor);
   const history = tasks.filter((t) => t.status !== 'pending').sort((a, b) => (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0));
+
+  const confirmDelete = (task: ScheduledTask) => {
+    if (Platform.OS !== 'ios') return removeTask(task.id);
+    Alert.alert('Delete scheduled task?', 'This removes the task and cancels its reminder. A remote task that has already started may still finish.', [
+      { text: 'Keep task', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => {
+        void removeTask(task.id).catch((error) => Alert.alert('Could not delete task', error instanceof Error ? error.message : 'Please try again.'));
+      } },
+    ]);
+  };
 
   return (
     <>
@@ -137,13 +154,21 @@ export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenSc
                 </Pressable>
               </View>
 
+              {Platform.OS === 'ios' && persistenceError ? (
+                <View style={{ marginBottom: 8, padding: 10, borderRadius: 10, backgroundColor: isDark ? '#35242A' : '#FFF1F0', flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                  <Ionicons name="warning-outline" size={16} color="#D92D20" />
+                  <Text accessibilityRole="alert" style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 12, color: colors.text }}>{persistenceError}</Text>
+                  <Pressable onPress={() => { void retryPersistence(); }} accessibilityRole="button" accessibilityLabel="Retry saving scheduled tasks"><Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 12, color: colors.text }}>Retry</Text></Pressable>
+                </View>
+              ) : null}
               <ScrollView style={{ maxHeight: 460 }}>
                 {pending.length === 0 && history.length === 0 ? (
                   <View style={styles.emptyState}>
                     <Ionicons name="alarm-outline" size={28} color={colors.textTertiary} />
                     <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-                      No scheduled tasks yet. Tap &quot;New&quot; to set one up — a reminder-style prompt that runs
-                      whenever you open the app after its scheduled time.
+                      {Platform.OS === 'ios'
+                        ? <>No scheduled tasks yet. Tap &quot;New&quot; to schedule one. Gateway tasks run at the selected time; local reminder tasks are ready to run when you tap Play.</>
+                        : <>No scheduled tasks yet. Tap &quot;New&quot; to set one up — a reminder-style prompt that runs whenever you open the app after its scheduled time.</>}
                     </Text>
                   </View>
                 ) : (
@@ -160,7 +185,7 @@ export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenSc
                             onRun={() => onRunTask(task)}
                             onReschedule={() => setRescheduling(task)}
                             canReschedule={!task.jobId || !!onRescheduleRemote}
-                            onDelete={() => removeTask(task.id)}
+                            onDelete={() => confirmDelete(task)}
                           />
                         ))}
                       </>
@@ -179,7 +204,7 @@ export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenSc
                             onRun={() => onRunTask(task)}
                             onReschedule={() => setRescheduling(task)}
                             canReschedule={!task.jobId || !!onRescheduleRemote}
-                            onDelete={() => removeTask(task.id)}
+                            onDelete={() => confirmDelete(task)}
                           />
                         ))}
                       </>
@@ -198,21 +223,32 @@ export function ScheduledTasksSheet({ visible, isDark, colors, onClose, onOpenSc
         colors={colors}
         initialPrompt={rescheduling?.prompt}
         initialTime={rescheduling ? Math.max(rescheduling.scheduledFor, Date.now() + 5 * 60 * 1000) : undefined}
+        isRescheduling={!!rescheduling}
         onClose={() => setRescheduling(null)}
-        onSchedule={(prompt, scheduledFor) => {
+        onSchedule={async (prompt, scheduledFor) => {
           if (rescheduling) {
-            if (rescheduling.jobId && onRescheduleRemote) {
-              onRescheduleRemote(rescheduling, scheduledFor).catch(() => {});
-            } else {
-              rescheduleTask(rescheduling.id, scheduledFor);
+            if (Platform.OS !== 'ios') {
+              if (rescheduling.jobId && onRescheduleRemote) {
+                onRescheduleRemote(rescheduling, rescheduling.prompt, scheduledFor).catch(() => {});
+              } else {
+                void rescheduleTask(rescheduling.id, scheduledFor);
+              }
+              setRescheduling(null);
+              return;
             }
-            // Prompt edits on reschedule aren't supported by rescheduleTask (it only
-            // takes a new time) -- reschedule is meant for "same task, new time".
-            // A changed prompt is intentionally treated as a brand new task instead
-            // via onOpenScheduleNew, so this path just uses the (possibly edited)
-            // prompt for display consistency without silently dropping the edit.
+            if (prompt.trim() !== rescheduling.prompt.trim()) {
+              if (rescheduling.jobId && onReplaceRemoteTask) {
+                await onReplaceRemoteTask(rescheduling, prompt.trim(), scheduledFor);
+              } else {
+                await rescheduleTask(rescheduling.id, scheduledFor, prompt.trim());
+              }
+            } else if (rescheduling.jobId && onRescheduleRemote) {
+              await onRescheduleRemote(rescheduling, prompt, scheduledFor);
+            } else {
+              await rescheduleTask(rescheduling.id, scheduledFor);
+            }
+            setRescheduling(null);
           }
-          setRescheduling(null);
         }}
       />
     </>

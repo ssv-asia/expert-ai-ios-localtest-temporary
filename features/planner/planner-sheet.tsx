@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  Alert,
   Animated,
   Keyboard,
   Modal,
@@ -68,7 +69,8 @@ interface PlannerSheetProps {
   // Scheduled
   onOpenScheduleNew: () => void;
   onRunTask: (task: ScheduledTask) => void;
-  onRescheduleRemote?: (task: ScheduledTask, scheduledFor: number) => Promise<void>;
+  onRescheduleRemote?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
+  onReplaceRemoteTask?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
 }
 
 export function PlannerSheet(props: PlannerSheetProps) {
@@ -98,6 +100,7 @@ export function PlannerSheet(props: PlannerSheetProps) {
     onOpenScheduleNew,
     onRunTask,
     onRescheduleRemote,
+    onReplaceRemoteTask,
   } = props;
 
   const insets = useSafeAreaInsets();
@@ -213,6 +216,7 @@ export function PlannerSheet(props: PlannerSheetProps) {
                 onOpenScheduleNew={onOpenScheduleNew}
                 onRunTask={onRunTask}
                 onRescheduleRemote={onRescheduleRemote}
+                onReplaceRemoteTask={onReplaceRemoteTask}
               />
             )}
           </Animated.View>
@@ -512,12 +516,14 @@ function ScheduledPanel({
   onOpenScheduleNew,
   onRunTask,
   onRescheduleRemote,
+  onReplaceRemoteTask,
 }: {
   colors: ThemeColors;
   isDark: boolean;
   onOpenScheduleNew: () => void;
   onRunTask: (task: ScheduledTask) => void;
-  onRescheduleRemote?: (task: ScheduledTask, scheduledFor: number) => Promise<void>;
+  onRescheduleRemote?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
+  onReplaceRemoteTask?: (task: ScheduledTask, prompt: string, scheduledFor: number) => Promise<void>;
 }) {
   const { tasks, loaded, load, persistenceError, retryPersistence, rescheduleTask, removeTask } = useScheduledTasksStore();
   const [rescheduling, setRescheduling] = useState<ScheduledTask | null>(null);
@@ -528,6 +534,16 @@ function ScheduledPanel({
 
   const pending = tasks.filter((t) => t.status === 'pending').sort((a, b) => a.scheduledFor - b.scheduledFor);
   const history = tasks.filter((t) => t.status !== 'pending').sort((a, b) => (b.lastRunAt ?? 0) - (a.lastRunAt ?? 0));
+
+  const confirmDelete = (task: ScheduledTask) => {
+    if (Platform.OS !== 'ios') return removeTask(task.id);
+    Alert.alert('Delete scheduled task?', 'This removes the task and cancels its reminder. A remote task that has already started may still finish.', [
+      { text: 'Keep task', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => {
+        void removeTask(task.id).catch((error) => Alert.alert('Could not delete task', error instanceof Error ? error.message : 'Please try again.'));
+      } },
+    ]);
+  };
 
   return (
     <>
@@ -557,8 +573,9 @@ function ScheduledPanel({
           <View style={styles.emptyState}>
             <Ionicons name="alarm-outline" size={28} color={colors.textTertiary} />
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
-              No scheduled tasks yet. Tap &quot;New&quot; to set one up — a reminder-style prompt that runs whenever you
-              open the app after its scheduled time.
+              {Platform.OS === 'ios'
+                ? <>No scheduled tasks yet. Tap &quot;New&quot; to schedule one. Gateway tasks run at the selected time; local reminder tasks are ready to run when you tap Play.</>
+                : <>No scheduled tasks yet. Tap &quot;New&quot; to set one up — a reminder-style prompt that runs whenever you open the app after its scheduled time.</>}
             </Text>
           </View>
         ) : (
@@ -573,8 +590,9 @@ function ScheduledPanel({
                     colors={colors}
                     onRun={() => onRunTask(task)}
                     onReschedule={() => setRescheduling(task)}
-                    canReschedule={!task.jobId || !!onRescheduleRemote}
-                    onDelete={() => removeTask(task.id)}
+                    canReschedule={!task.submissionPending && (!task.jobId || !!onRescheduleRemote)}
+                    canDelete={!task.submissionPending}
+                    onDelete={() => confirmDelete(task)}
                   />
                 ))}
               </>
@@ -591,8 +609,9 @@ function ScheduledPanel({
                     colors={colors}
                     onRun={() => onRunTask(task)}
                     onReschedule={() => setRescheduling(task)}
-                    canReschedule={!task.jobId || !!onRescheduleRemote}
-                    onDelete={() => removeTask(task.id)}
+                    canReschedule={!task.submissionPending && (!task.jobId || !!onRescheduleRemote)}
+                    canDelete={!task.submissionPending}
+                    onDelete={() => confirmDelete(task)}
                   />
                 ))}
               </>
@@ -607,14 +626,32 @@ function ScheduledPanel({
         colors={colors}
         initialPrompt={rescheduling?.prompt}
         initialTime={rescheduling ? Math.max(rescheduling.scheduledFor, Date.now() + 5 * 60 * 1000) : undefined}
+        isRescheduling={!!rescheduling}
         onClose={() => setRescheduling(null)}
-        onSchedule={(_, scheduledFor) => {
-          if (rescheduling?.jobId && onRescheduleRemote) {
-            onRescheduleRemote(rescheduling, scheduledFor).catch(() => {});
-          } else if (rescheduling) {
-            rescheduleTask(rescheduling.id, scheduledFor);
+        onSchedule={async (prompt, scheduledFor) => {
+          if (Platform.OS !== 'ios') {
+            if (rescheduling?.jobId && onRescheduleRemote) {
+              onRescheduleRemote(rescheduling, rescheduling.prompt, scheduledFor).catch(() => {});
+            } else if (rescheduling) {
+              void rescheduleTask(rescheduling.id, scheduledFor);
+            }
+            setRescheduling(null);
+            return;
           }
-          setRescheduling(null);
+          if (rescheduling) {
+            if (prompt.trim() !== rescheduling.prompt.trim()) {
+              if (rescheduling.jobId && onReplaceRemoteTask) {
+                await onReplaceRemoteTask(rescheduling, prompt.trim(), scheduledFor);
+              } else {
+                await rescheduleTask(rescheduling.id, scheduledFor, prompt.trim());
+              }
+            } else if (rescheduling.jobId && onRescheduleRemote) {
+              await onRescheduleRemote(rescheduling, prompt, scheduledFor);
+            } else {
+              await rescheduleTask(rescheduling.id, scheduledFor);
+            }
+            setRescheduling(null);
+          }
         }}
       />
     </>
@@ -627,6 +664,7 @@ function TaskRow({
   onRun,
   onReschedule,
   canReschedule,
+  canDelete,
   onDelete,
 }: {
   task: ScheduledTask;
@@ -634,13 +672,14 @@ function TaskRow({
   onRun: () => void;
   onReschedule: () => void;
   canReschedule: boolean;
+  canDelete: boolean;
   onDelete: () => void;
 }) {
-  const isDue = task.status === 'pending' && task.scheduledFor <= Date.now();
+  const isDue = task.status === 'pending' && !task.submissionPending && task.scheduledFor <= Date.now();
   const badgeColor =
-    task.status === 'completed' ? '#34C759' : task.status === 'failed' ? '#FF3B30' : isDue ? '#FF9500' : colors.textTertiary;
+    task.submissionPending ? colors.accent : task.status === 'completed' ? '#34C759' : task.status === 'failed' || (Platform.OS === 'ios' && task.status === 'exhausted') ? '#FF3B30' : isDue ? '#FF9500' : colors.textTertiary;
   const badgeLabel =
-    task.status === 'completed' ? 'Done' : task.status === 'failed' ? 'Failed' : isDue ? 'Due now' : 'Scheduled';
+    task.submissionPending ? 'Checking status' : task.status === 'completed' ? 'Done' : Platform.OS === 'ios' && task.status === 'exhausted' ? 'Needs restart' : task.status === 'failed' ? 'Failed' : isDue ? 'Due now' : 'Scheduled';
 
   return (
     <View style={[styles.row, { borderColor: colors.border }]}>
@@ -653,9 +692,14 @@ function TaskRow({
             <Text style={[styles.badgeText, { color: badgeColor }]}>{badgeLabel}</Text>
           </View>
           <Text style={[styles.rowMeta, { color: colors.textTertiary }]}>
-            {task.status === 'pending' ? formatWhen(task.scheduledFor) : task.lastRunAt ? `Ran ${formatWhen(task.lastRunAt)}` : ''}
+            {task.submissionPending ? 'Checking Gateway acceptance…' : task.status === 'pending' ? formatWhen(task.scheduledFor) : task.lastRunAt ? `Ran ${formatWhen(task.lastRunAt)}` : ''}
           </Text>
         </View>
+        {Platform.OS === 'ios' && task.status === 'pending' && !task.submissionPending && !task.reminderId ? (
+          <Text style={[styles.resultPreview, { color: '#C48A2D' }]} numberOfLines={2}>
+            No iPhone reminder was saved. Check notification permission or run this task manually.
+          </Text>
+        ) : null}
         {task.lastResultPreview ? (
           <Text style={[styles.resultPreview, { color: colors.textSecondary }]} numberOfLines={2}>
             {task.lastResultPreview}
@@ -663,13 +707,13 @@ function TaskRow({
         ) : null}
       </View>
       <View style={styles.rowActions}>
-        <Pressable onPress={onRun} hitSlop={8} style={styles.rowActionBtn}>
-          <Ionicons name="play-circle-outline" size={22} color={colors.text} />
+        <Pressable onPress={onRun} hitSlop={8} {...(Platform.OS === 'ios' ? { accessibilityRole: 'button' as const, accessibilityLabel: task.submissionPending ? 'Check scheduled task submission status' : 'Run scheduled task' } : {})} style={styles.rowActionBtn}>
+          <Ionicons name={task.submissionPending ? 'refresh-outline' : 'play-circle-outline'} size={22} color={colors.text} />
         </Pressable>
         <Pressable onPress={onReschedule} disabled={!canReschedule} hitSlop={8} style={styles.rowActionBtn}>
           <Ionicons name="time-outline" size={20} color={canReschedule ? colors.text : colors.textTertiary} />
         </Pressable>
-        <Pressable onPress={onDelete} hitSlop={8} style={styles.rowActionBtn}>
+        <Pressable onPress={onDelete} disabled={!canDelete} hitSlop={8} style={[styles.rowActionBtn, { opacity: canDelete ? 1 : 0.4 }]}>
           <Ionicons name="trash-outline" size={19} color="#FF3B30" />
         </Pressable>
       </View>

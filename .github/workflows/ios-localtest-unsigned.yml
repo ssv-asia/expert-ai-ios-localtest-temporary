@@ -2,23 +2,34 @@ name: iOS local test IPA (unsigned)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/ios-platform-fixes-20261114
 
 jobs:
   build-ios:
     runs-on: macos-15
     env:
       EXPO_PUBLIC_GITHUB_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GITHUB_CLIENT_ID }}
+      EXPERT_AI_LOCALTEST_BUILD: "true"
+      EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID: ${{ vars.EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID }}
       SENTRY_DISABLE_AUTO_UPLOAD: "true"
     steps:
       - uses: actions/checkout@v4
+
+      - name: Require Google iOS OAuth configuration
+        run: |
+          if [ -z "$EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID" ]; then
+            echo "EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID must be set as a repository variable for bundle ID com.local.expertai so the iOS Google sign-in button and URL scheme are included."
+            exit 1
+          fi
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: yarn
+
+      - name: Verify React Native iOS toolchain
+        run: |
+          xcodebuild -version
+          node -e 'const { execFileSync } = require("node:child_process"); const match = execFileSync("xcodebuild", ["-version"], { encoding: "utf8" }).match(/Xcode (\d+)\.(\d+)/); if (!match || Number(match[1]) < 16 || (Number(match[1]) === 16 && Number(match[2]) < 1)) { console.error("React Native 0.81 requires Xcode 16.1 or newer."); process.exit(1); }'
 
       - name: Install JavaScript dependencies
         run: |
@@ -28,52 +39,138 @@ jobs:
       - name: Generate iOS project
         run: npx expo prebuild --platform ios --no-install
 
-      - name: Set iOS deployment target required by ML Kit
+      - name: Verify generated iOS capabilities
+        run: |
+          set -euo pipefail
+          PROJECT="ios/ExpertAI.xcodeproj/project.pbxproj"
+          grep -q 'ShareExtension' "$PROJECT"
+          grep -q 'ShareExtension.appex in Copy Files' "$PROJECT"
+          grep -Eq 'target = .*ShareExtension' "$PROJECT"
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const projectText = fs.readFileSync('ios/ExpertAI.xcodeproj/project.pbxproj', 'utf8');
+          const path = 'ios/Podfile.properties.json';
+          const properties = JSON.parse(fs.readFileSync(path, 'utf8'));
+          const config = JSON.parse(execFileSync('npx', ['expo', 'config', '--type', 'public', '--json'], { encoding: 'utf8' }));
+          const privacy = JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', 'ios/ExpertAI/PrivacyInfo.xcprivacy'], { encoding: 'utf8' }));
+          const clientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_LOCALTEST_CLIENT_ID;
+          const clientPrefix = clientId?.match(/^([A-Za-z0-9-]+)\.apps\.googleusercontent\.com$/)?.[1];
+          const share = config.extra?.eas?.build?.experimental?.ios?.appExtensions?.find((item) => item.targetName === 'ShareExtension');
+          if (config.ios?.bundleIdentifier !== 'com.local.expertai') throw new Error('Unexpected local-test bundle identifier.');
+          if (!clientPrefix) throw new Error('Invalid local-test Google iOS OAuth client ID.');
+          const plist = fs.readFileSync('ios/ExpertAI/Info.plist', 'utf8');
+          if (!plist.includes(`<string>com.googleusercontent.apps.${clientPrefix}</string>`)) throw new Error('Generated iOS Info.plist is missing the Google OAuth callback URL scheme.');
+          if (!share || share.bundleIdentifier !== 'com.local.expertai.share-extension') throw new Error('Share Extension is not configured for the local-test bundle identifier.');
+          if (share.entitlements?.['com.apple.security.application-groups']?.[0] !== 'group.com.local.expertai') throw new Error('Share Extension app group does not match the local-test app.');
+          const appTarget = projectText.match(/([A-F0-9]{24}) \/\* ExpertAI \*\/ = \{\s*isa = PBXNativeTarget;[\s\S]*?dependencies = \(([\s\S]*?)\);/);
+          const dependencyIds = appTarget?.[2].match(/[A-F0-9]{24}/g) || [];
+          const dependsOnShareExtension = dependencyIds.some((id) => {
+            const marker = `${id} /* PBXTargetDependency */ = {`;
+            const start = projectText.indexOf(marker);
+            const end = start < 0 ? -1 : projectText.indexOf('\n\t\t};', start);
+            return start >= 0 && end >= 0 && projectText.slice(start, end).includes('ShareExtension');
+          });
+          if (!dependsOnShareExtension) throw new Error('The ExpertAI target does not depend on the ShareExtension target.');
+          const extensionCopyPhase = projectText.match(/([A-F0-9]{24}) \/\* Copy Files \*\/ = \{\s*isa = PBXCopyFilesBuildPhase;([\s\S]*?)\n\s*\};/);
+          if (!extensionCopyPhase || !/dstSubfolderSpec = 13;/.test(extensionCopyPhase[2]) || !extensionCopyPhase[2].includes('ShareExtension.appex in Copy Files')) throw new Error('The ShareExtension is not embedded in the app PlugIns directory.');
+          if (privacy.NSPrivacyTracking !== false) throw new Error('App privacy manifest must declare that Expert AI does not track users.');
+          const collected = new Set((privacy.NSPrivacyCollectedDataTypes || []).map((item) => item.NSPrivacyCollectedDataType));
+          for (const type of ['NSPrivacyCollectedDataTypeEmailAddress', 'NSPrivacyCollectedDataTypeUserID', 'NSPrivacyCollectedDataTypeDeviceID', 'NSPrivacyCollectedDataTypeOtherUserContent', 'NSPrivacyCollectedDataTypePhotosorVideos']) {
+            if (!collected.has(type)) throw new Error(`App privacy manifest is missing ${type}.`);
+            const declaration = privacy.NSPrivacyCollectedDataTypes.find((item) => item.NSPrivacyCollectedDataType === type);
+            if (declaration.NSPrivacyCollectedDataTypeLinked !== true || declaration.NSPrivacyCollectedDataTypeTracking !== false || !declaration.NSPrivacyCollectedDataTypePurposes?.includes('NSPrivacyCollectedDataTypePurposeAppFunctionality')) throw new Error(`App privacy declaration is inconsistent for ${type}.`);
+          }
+          if (properties['ios.deploymentTarget'] !== '16.0') throw new Error(`Expected iOS deployment target 16.0, got ${properties['ios.deploymentTarget'] ?? 'unset'}.`);
+          NODE
+
+      - name: Verify iOS deployment target required by ML Kit
         run: |
           node <<'NODE'
           const fs = require('fs');
           const path = 'ios/Podfile.properties.json';
           const properties = JSON.parse(fs.readFileSync(path, 'utf8'));
-          properties['ios.deploymentTarget'] = '16.0';
-          fs.writeFileSync(path, `${JSON.stringify(properties, null, 2)}\n`);
+          if (properties['ios.deploymentTarget'] !== '16.0') {
+            console.error(`Expected iOS deployment target 16.0, got ${properties['ios.deploymentTarget'] ?? 'unset'}.`);
+            process.exit(1);
+          }
           NODE
 
       - name: Install CocoaPods
         working-directory: ios
         run: pod install
 
-      - name: Build Release Pods
-        run: >-
-          xcodebuild -quiet -project ios/Pods/Pods.xcodeproj
-          -target Pods-ExpertAI -configuration Release -sdk iphoneos
-          CODE_SIGNING_ALLOWED=NO build
+      - name: Verify CocoaPods workspace
+        run: |
+          set -euo pipefail
+          test -d ios/ExpertAI.xcworkspace
+          xcodebuild -list -workspace ios/ExpertAI.xcworkspace 2>/dev/null | grep -q 'ExpertAI'
+
+      - name: Verify Sentry SDK privacy manifest
+        run: |
+          set -euo pipefail
+          SENTRY_PRIVACY="ios/Pods/Sentry/Sources/Resources/PrivacyInfo.xcprivacy"
+          test -f "$SENTRY_PRIVACY"
+          plutil -lint "$SENTRY_PRIVACY"
 
       - name: Build the Release app without a signing profile
         run: >-
-          xcodebuild -quiet -project ios/ExpertAI.xcodeproj
-          -target ExpertAI -configuration Release -sdk iphoneos
-          CODE_SIGNING_ALLOWED=NO PRODUCT_BUNDLE_IDENTIFIER=com.local.expertai build
+          xcodebuild -quiet -workspace ios/ExpertAI.xcworkspace
+          -scheme ExpertAI -configuration Release -sdk iphoneos
+          -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          PRODUCT_BUNDLE_IDENTIFIER=com.local.expertai build
 
       - name: Package IPA
         run: |
           set -euo pipefail
-          APP_PATH="ios/build/Release-iphoneos/ExpertAI.app"
+          APP_PATH="ios/build/Build/Products/Release-iphoneos/ExpertAI.app"
+          EXTENSION_PATH="ios/build/Build/Products/Release-iphoneos/ShareExtension.appex"
+          EMBEDDED_EXTENSION_PATH="$APP_PATH/PlugIns/ShareExtension.appex"
           test -d "$APP_PATH"
+          test -d "$EXTENSION_PATH"
+          test -d "$EMBEDDED_EXTENSION_PATH"
+          test -f "$APP_PATH/Sentry.bundle/PrivacyInfo.xcprivacy"
+          plutil -lint "$APP_PATH/PrivacyInfo.xcprivacy" "$APP_PATH/Sentry.bundle/PrivacyInfo.xcprivacy"
+          node - "$APP_PATH/PrivacyInfo.xcprivacy" "$APP_PATH/Sentry.bundle/PrivacyInfo.xcprivacy" <<'NODE'
+          const { execFileSync } = require('child_process');
+          const readManifest = (path) => JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', path], { encoding: 'utf8' }));
+          const app = readManifest(process.argv[2]);
+          const appTypes = new Set((app.NSPrivacyCollectedDataTypes || []).map((item) => item.NSPrivacyCollectedDataType));
+          for (const type of ['NSPrivacyCollectedDataTypeEmailAddress', 'NSPrivacyCollectedDataTypeUserID', 'NSPrivacyCollectedDataTypeDeviceID', 'NSPrivacyCollectedDataTypeOtherUserContent', 'NSPrivacyCollectedDataTypePhotosorVideos']) {
+            if (!appTypes.has(type)) throw new Error(`Packaged app privacy manifest is missing ${type}.`);
+          }
+          if (app.NSPrivacyTracking !== false) throw new Error('Packaged app privacy manifest must disable tracking.');
+          const sentry = readManifest(process.argv[3]);
+          const sentryTypes = new Set((sentry.NSPrivacyCollectedDataTypes || []).map((item) => item.NSPrivacyCollectedDataType));
+          for (const type of ['NSPrivacyCollectedDataTypeCrashData', 'NSPrivacyCollectedDataTypePerformanceData', 'NSPrivacyCollectedDataTypeOtherDiagnosticData']) {
+            if (!sentryTypes.has(type)) throw new Error(`Packaged Sentry privacy manifest is missing ${type}.`);
+          }
+          NODE
           plutil -lint "$APP_PATH/Info.plist"
           BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP_PATH/Info.plist")
           test "$BUNDLE_ID" = "com.local.expertai"
           MINIMUM_IOS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP_PATH/Info.plist")
-          echo "Built bundle: $BUNDLE_ID"
-          echo "Minimum iOS: $MINIMUM_IOS"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP_PATH/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
+          DEVICE_FAMILY=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$APP_PATH/Info.plist")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          test -x "$APP_PATH/$EXECUTABLE"
+          lipo -verify_arch arm64 "$APP_PATH/$EXECUTABLE"
+          case "$DEVICE_FAMILY" in *1*2*) ;; *) echo "Expected iPhone and iPad support, got $DEVICE_FAMILY"; exit 1 ;; esac
+          test "$MINIMUM_IOS" = "16.0"
+          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EMBEDDED_EXTENSION_PATH/Info.plist")" = "com.local.expertai.share-extension"
+          printf 'Bundle: %s\nVersion: %s (%s)\nMinimum iOS: %s\nDevice family: %s\n' "$BUNDLE_ID" "$VERSION" "$BUILD" "$MINIMUM_IOS" "$DEVICE_FAMILY" | tee release-metadata.txt
           mkdir -p release-localtest/Payload
           cp -R "$APP_PATH" release-localtest/Payload/ExpertAI.app
           (cd release-localtest && /usr/bin/zip -qry ExpertAI-for-AltServer.ipa Payload)
           /usr/bin/unzip -tq release-localtest/ExpertAI-for-AltServer.ipa
+          /usr/bin/unzip -Z1 release-localtest/ExpertAI-for-AltServer.ipa | grep -Fq 'Payload/ExpertAI.app/PlugIns/ShareExtension.appex/Info.plist'
           shasum -a 256 release-localtest/ExpertAI-for-AltServer.ipa > release-localtest/ExpertAI-for-AltServer.ipa.sha256
+          cp release-metadata.txt release-localtest/ExpertAI-for-AltServer.txt
 
       - uses: actions/upload-artifact@v4
         with:
           name: ExpertAI-for-AltServer
-          path: release-localtest/ExpertAI-for-AltServer.ipa*
+          path: release-localtest/ExpertAI-for-AltServer.*
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 7

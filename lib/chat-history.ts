@@ -18,6 +18,11 @@ export interface StoredMessage {
   text: string;
   /** Non-sensitive route attribution captured from the stream metadata. */
   servedModel?: string;
+  /** Preserve retry/background state when an app is closed or a chat is switched. */
+  failed?: boolean;
+  queued?: boolean;
+  /** A stream was active at the last checkpoint and must be offered for retry on restore. */
+  interrupted?: boolean;
 }
 
 export interface Conversation {

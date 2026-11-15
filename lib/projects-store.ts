@@ -38,8 +38,10 @@ async function readAll(): Promise<Project[]> {
   try {
     const raw = await readKey();
     const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
+    if (!Array.isArray(parsed)) throw new Error('Saved projects have an invalid format.');
+    cache = parsed;
+  } catch (error) {
+    if (Platform.OS === 'ios') throw error;
     cache = [];
   }
   return cache;
@@ -47,19 +49,20 @@ async function readAll(): Promise<Project[]> {
 
 async function writeAll(projects: Project[]): Promise<void> {
   const operation = writeChain.then(async () => {
-    cache = projects;
-    try {
+    if (Platform.OS === 'ios') {
       await writeKey(JSON.stringify(projects));
-    } catch {
-      /* best-effort — losing a project write is recoverable, never crash the chat over it */
+      cache = projects;
+      return;
     }
+    cache = projects;
+    try { await writeKey(JSON.stringify(projects)); } catch { /* preserve existing best-effort behavior */ }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
   await operation;
 }
 
 export async function listProjects(): Promise<Project[]> {
-  const all = await readAll();
+  const all = [...await readAll()];
   return [...all].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -68,7 +71,7 @@ export function makeProjectId(): string {
 }
 
 export async function createProject(name: string): Promise<Project> {
-  const all = await readAll();
+  const all = [...await readAll()];
   const now = Date.now();
   const project: Project = { id: makeProjectId(), name: name.trim() || 'Untitled project', createdAt: now, updatedAt: now };
   all.unshift(project);
@@ -77,7 +80,7 @@ export async function createProject(name: string): Promise<Project> {
 }
 
 export async function renameProject(id: string, name: string): Promise<void> {
-  const all = await readAll();
+  const all = [...await readAll()];
   const idx = all.findIndex((p) => p.id === id);
   if (idx < 0) return;
   all[idx] = { ...all[idx], name: name.trim() || all[idx].name, updatedAt: Date.now() };

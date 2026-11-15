@@ -2,7 +2,9 @@ import React from 'react';
 import {
   Alert,
   Modal,
+  Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   View,
@@ -30,13 +32,13 @@ export function AIDisclaimerModal({
   const handleOpenPrivacyPolicy = async () => {
     try {
       await Linking.openURL('https://ssv.asia/privacy-policy/');
-    } catch (e) {
+    } catch {
       Alert.alert('Error', 'Could not open privacy policy link');
     }
   };
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onDismiss}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={Platform.OS === 'ios' ? () => {} : onDismiss}>
       <View style={[styles.overlay, { backgroundColor: overlayBg }]}>
         <View style={[styles.card, { backgroundColor: bg }]}>
           {/* Header */}
@@ -48,7 +50,19 @@ export function AIDisclaimerModal({
           </View>
 
           {/* Content */}
-          <View style={styles.content}>
+          <ScrollView style={styles.contentScroll} contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+            {/* Apple requires explicit consent before user data is shared with
+                third-party AI services. Keep this disclosure on the first-run
+                acknowledgement, before the user starts sending prompts. */}
+            {Platform.OS === 'ios' ? (
+              <View style={[styles.section, styles.dataNotice, { borderColor: isDark ? '#51421f' : '#ead9ad', backgroundColor: isDark ? '#292315' : '#fff9e9' }]}>
+                <Text style={[styles.sectionTitle, { color: textPrimary }]}>Your content and AI providers</Text>
+                <Text style={[styles.body, { color: textMuted }]}>
+                  When you send a message, Expert AI sends your prompt and the conversation context or files you choose to include to its gateway and the providers needed to answer. This can include OpenRouter and the selected AI model provider, Tavily for requested web searches, and Supabase for knowledge retrieval. Those providers process your content under their own terms and retention policies. Do not send content you are not comfortable sharing. Read the Privacy Policy for details.
+                </Text>
+              </View>
+            ) : null}
+
             {/* Section 1: AI-Generated Responses */}
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: textPrimary }]}>
@@ -81,7 +95,7 @@ export function AIDisclaimerModal({
                 or financial decisions.
               </Text>
             </View>
-          </View>
+          </ScrollView>
 
           {/* Buttons */}
           <View style={styles.buttons}>
@@ -90,7 +104,7 @@ export function AIDisclaimerModal({
               onPress={onDismiss}
             >
               <Text style={[styles.buttonText, { color: '#FFFFFF' }]}>
-                Got It
+                {Platform.OS === 'ios' ? 'Agree and continue' : 'Got It'}
               </Text>
             </Pressable>
             <Pressable
@@ -141,6 +155,14 @@ const styles = StyleSheet.create({
   content: {
     marginBottom: 24,
     gap: 16,
+  },
+  contentScroll: {
+    maxHeight: '72%',
+  },
+  dataNotice: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 12,
   },
   section: {
     gap: 8,

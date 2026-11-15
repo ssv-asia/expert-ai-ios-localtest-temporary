@@ -386,7 +386,7 @@ export function QrScanner({ visible, onClose, onNeedNewWorkspace }: QrScannerPro
   // Pairing success
   if (step === "done") {
     return (
-      <Modal visible={visible} transparent animationType="fade" onRequestClose={() => {}}>
+      <Modal visible={visible} transparent animationType="fade" onRequestClose={handleClose}>
         <View style={[styles.overlay, { backgroundColor: isDark ? "rgba(0,0,0,0.6)" : "rgba(0,0,0,0.3)" }]}>
           <View style={[styles.card, { backgroundColor: cardBg, borderColor }]}>
             <View style={styles.statusCenter}>

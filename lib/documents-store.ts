@@ -51,9 +51,15 @@ async function readAll(): Promise<StoredDocument[]> {
   try {
     const raw = await readKey();
     const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
-    cache = [];
+    if (!Array.isArray(parsed)) throw new Error('Saved documents have an invalid format.');
+    cache = parsed;
+  } catch (error) {
+    if (cache) return cache;
+    if (Platform.OS !== 'ios') {
+      cache = [];
+      return cache;
+    }
+    throw error;
   }
   return cache;
 }
@@ -64,11 +70,12 @@ async function writeAll(docs: StoredDocument[]): Promise<void> {
       .slice()
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, MAX_DOCUMENTS);
-    cache = bounded;
-    try {
+    if (Platform.OS === 'ios') {
       await writeKey(JSON.stringify(bounded));
-    } catch {
-      /* best-effort — losing a document write is recoverable, never crash the chat over it */
+      cache = bounded;
+    } else {
+      cache = bounded;
+      try { await writeKey(JSON.stringify(bounded)); } catch { /* preserve existing best-effort behavior */ }
     }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
@@ -87,7 +94,7 @@ export async function getDocument(id: string): Promise<StoredDocument | null> {
 }
 
 export async function saveDocument(doc: StoredDocument): Promise<void> {
-  const all = await readAll();
+  const all = [...await readAll()];
   const idx = all.findIndex((d) => d.id === doc.id);
   if (idx >= 0) all[idx] = doc;
   else all.unshift(doc);
@@ -95,7 +102,7 @@ export async function saveDocument(doc: StoredDocument): Promise<void> {
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const all = await readAll();
+  const all = [...await readAll()];
   await writeAll(all.filter((d) => d.id !== id));
 }
 

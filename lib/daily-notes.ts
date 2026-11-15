@@ -1,8 +1,7 @@
 // Daily Notes — a per-day local scratchpad with an archive, deeply tied into the
 // chat model (see app/simple-chat.tsx). Device-local only, never synced to the
 // gateway. Storage mirrors lib/chat-history.ts exactly: one JSON file on native
-// via expo-file-system/legacy, localStorage on web, an in-memory cache, and
-// best-effort writes (losing a note is never fatal, never a crash).
+// via expo-file-system/legacy, localStorage on web, and an in-memory cache.
 //
 // Why one JSON file and not one .md file per day: the legacy file API is the only
 // storage this app has used without crashing on device (see the chat-history.ts
@@ -66,11 +65,7 @@ async function readRaw(): Promise<string | null> {
 
 async function writeRaw(value: string): Promise<void> {
   if (Platform.OS === 'web') {
-    try {
-      localStorage.setItem(STORAGE_KEY, value);
-    } catch {
-      /* quota / private mode — best effort */
-    }
+    localStorage.setItem(STORAGE_KEY, value);
     return;
   }
   await FileSystem.writeAsStringAsync(notesTempPath, value);
@@ -94,17 +89,6 @@ async function readAll(): Promise<DailyNote[]> {
     throw error;
   }
   return cache;
-}
-
-async function writeAll(notes: DailyNote[]): Promise<void> {
-  const operation = writeChain.then(async () => {
-    // Newest first, then clamp.
-    const bounded = [...notes].sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, MAX_NOTES);
-    await writeRaw(JSON.stringify(bounded));
-    cache = bounded;
-  });
-  writeChain = operation.then(() => undefined).catch(() => {});
-  await operation;
 }
 
 /** `YYYY-MM-DD` for the given date in the DEVICE's local timezone (not UTC —
@@ -171,26 +155,34 @@ export async function getDailyNote(id: string): Promise<DailyNote | null> {
 /** Today's note, creating it (with carry-forward of yesterday's unchecked Focus
  *  items) the first time it's opened on a new local day. */
 export async function getOrCreateTodayNote(): Promise<DailyNote> {
-  const all = await readAll();
   const key = localDayKey();
-  const existing = all.find((n) => n.id === key);
-  if (existing) return existing;
+  let result: DailyNote | null = null;
+  const operation = writeChain.then(async () => {
+    cache = null;
+    const all = await readAll();
+    result = all.find((note) => note.id === key) ?? null;
+    if (result) return;
 
-  // Carry forward any still-open checkbox items from the most recent prior note.
-  const prior = [...all].sort((a, b) => (a.id < b.id ? 1 : -1)).find((n) => n.id < key);
-  const carried = prior ? extractOpenTasks(prior.body).slice(0, 12) : [];
-
-  const now = Date.now();
-  const note: DailyNote = {
-    id: key,
-    title: dailyNoteTitle(key),
-    body: buildTemplate(key, carried),
-    touched: false,
-    createdAt: now,
-    updatedAt: now,
-  };
-  await writeAll([note, ...all]);
-  return note;
+    // Carry forward any still-open checkbox items from the most recent prior note.
+    const prior = [...all].sort((a, b) => (a.id < b.id ? 1 : -1)).find((note) => note.id < key);
+    const carried = prior ? extractOpenTasks(prior.body).slice(0, 12) : [];
+    const now = Date.now();
+    const note: DailyNote = {
+      id: key,
+      title: dailyNoteTitle(key),
+      body: buildTemplate(key, carried),
+      touched: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+    result = note;
+    const bounded = [note, ...all].sort((a, b) => (a.id < b.id ? 1 : -1)).slice(0, MAX_NOTES);
+    await writeRaw(JSON.stringify(bounded));
+    cache = bounded;
+  });
+  writeChain = operation.then(() => undefined).catch(() => {});
+  await operation;
+  return result!;
 }
 
 export async function saveDailyNoteBody(id: string, body: string): Promise<void> {
@@ -239,7 +231,10 @@ export async function appendToDailyNote(id: string, block: string): Promise<void
  * The model never receives filesystem access; it can only request these
  * bounded operations through the app, which keeps the note directory private. */
 export async function executeDailyNoteTool(args: Record<string, unknown>): Promise<Record<string, unknown>> {
-  const action = String(args.action || 'read');
+  if (args.action !== undefined && typeof args.action !== 'string') {
+    return { error: true, message: 'Daily-note action must be text.' };
+  }
+  const action = args.action || 'read';
   if (action === 'list') {
     const notes = await listDailyNotes();
     return {
@@ -247,7 +242,13 @@ export async function executeDailyNoteTool(args: Record<string, unknown>): Promi
       notes: notes.slice(0, 40).map(({ id, title, touched, updatedAt }) => ({ id, title, touched, updatedAt })),
     };
   }
-  const id = String(args.date || localDayKey());
+  if (!['read', 'create', 'append', 'replace'].includes(action)) {
+    return { error: true, message: `Unsupported daily-note action: ${action}.` };
+  }
+  if (args.date !== undefined && typeof args.date !== 'string') {
+    return { error: true, message: 'Daily-note date must be text in YYYY-MM-DD format.' };
+  }
+  const id = args.date || localDayKey();
   if (!/^\d{4}-\d{2}-\d{2}$/.test(id)) return { error: true, message: 'Use date format YYYY-MM-DD.' };
   const [year, month, day] = id.split('-').map(Number);
   const parsedDate = new Date(year, month - 1, day);
@@ -259,11 +260,14 @@ export async function executeDailyNoteTool(args: Record<string, unknown>): Promi
     return note ? { ok: true, date: id, title: note.title, body: note.body } : { ok: true, date: id, exists: false };
   }
   if (action === 'create') {
+    const existed = await getDailyNote(id);
     const note = await getOrCreateNoteForDate(id);
-    return { ok: true, date: id, title: note.title, body: note.body, created: true };
+    return { ok: true, date: id, title: note.title, body: note.body, created: !existed };
   }
-  const content = String(args.content || '').trim();
-  if (!content) return { error: true, message: 'Content is required for note changes.' };
+  if (typeof args.content !== 'string' || !args.content.trim()) {
+    return { error: true, message: 'Non-empty text content is required for note changes.' };
+  }
+  const content = args.content.trim();
   if (action === 'append') {
     await appendToDailyNote(id, content);
     const note = await getDailyNote(id);
