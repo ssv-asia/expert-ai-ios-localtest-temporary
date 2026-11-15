@@ -158,12 +158,18 @@ jobs:
           BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP_PATH/Info.plist")
           DEVICE_FAMILY=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$APP_PATH/Info.plist")
           EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
+          printf 'Bundle: %s\nVersion: %s (%s)\nMinimum iOS: %s\nDevice family raw: <%s>\n' "$BUNDLE_ID" "$VERSION" "$BUILD" "$MINIMUM_IOS" "$DEVICE_FAMILY"
           test -x "$APP_PATH/$EXECUTABLE"
-          lipo "$APP_PATH/$EXECUTABLE" -verify_arch arm64
-          case "$DEVICE_FAMILY" in *1*2*) ;; *) echo "Expected iPhone and iPad support, got $DEVICE_FAMILY"; exit 1 ;; esac
-          test "$MINIMUM_IOS" = "16.0"
-          test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EMBEDDED_EXTENSION_PATH/Info.plist")" = "com.local.expertai.share-extension"
-          printf 'Bundle: %s\nVersion: %s (%s)\nMinimum iOS: %s\nDevice family: %s\n' "$BUNDLE_ID" "$VERSION" "$BUILD" "$MINIMUM_IOS" "$DEVICE_FAMILY" | tee release-metadata.txt
+          ARCHITECTURES=$(/usr/bin/lipo "$APP_PATH/$EXECUTABLE" -archs)
+          echo "Executable architectures: $ARCHITECTURES"
+          case " $ARCHITECTURES " in *arm64*) ;; *) echo "Expected arm64 device executable, got: $ARCHITECTURES"; exit 1 ;; esac
+          /usr/bin/lipo "$APP_PATH/$EXECUTABLE" -verify_arch arm64
+          DEVICE_FAMILY_NORMALIZED=$(printf '%s' "$DEVICE_FAMILY" | tr -d '[:space:]')
+          case "$DEVICE_FAMILY_NORMALIZED" in *1*2*) ;; *) echo "Expected iPhone and iPad support (UIDeviceFamily values 1 and 2), got: <$DEVICE_FAMILY>"; exit 1 ;; esac
+          if [ "$MINIMUM_IOS" != "16.0" ]; then echo "Expected minimum iOS 16.0, got $MINIMUM_IOS"; exit 1; fi
+          EXTENSION_BUNDLE_ID=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EMBEDDED_EXTENSION_PATH/Info.plist")
+          if [ "$EXTENSION_BUNDLE_ID" != "com.local.expertai.share-extension" ]; then echo "Unexpected embedded Share Extension bundle ID: $EXTENSION_BUNDLE_ID"; exit 1; fi
+          printf 'Bundle: %s\nVersion: %s (%s)\nMinimum iOS: %s\nDevice family: %s\nArchitectures: %s\n' "$BUNDLE_ID" "$VERSION" "$BUILD" "$MINIMUM_IOS" "$DEVICE_FAMILY_NORMALIZED" "$ARCHITECTURES" | tee release-metadata.txt
           mkdir -p release-localtest/Payload
           cp -R "$APP_PATH" release-localtest/Payload/ExpertAI.app
           (cd release-localtest && /usr/bin/zip -qry ExpertAI-for-AltServer.ipa Payload)

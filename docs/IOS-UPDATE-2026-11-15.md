@@ -52,9 +52,12 @@ failed at the missing-client precheck before installing dependencies; it
 produced no IPA. Run `43710702384` for `71ac9a1` was cancelled after its
 no-Google configuration had passed the initial build checks. A replacement
 run `43711087685` with the owner's iOS client ID compiled successfully but
-failed in the package verification because the `lipo -verify_arch` arguments
-were ordered incorrectly. No artifact was uploaded. The workflow command is
-now corrected; record the replacement run and artifact below.
+failed at the incorrectly ordered `lipo -verify_arch` invocation. Run
+`43712887759` also compiled successfully but failed in package verification
+after the app Info.plist passed; its logs did not identify which silent
+assertion failed. Packaging checks now print the executable architectures and
+raw `UIDeviceFamily`, and report precise failures. No artifact was uploaded by
+either run. Record the diagnostic replacement run and artifact below.
 
 ## Still pending / release limits
 
