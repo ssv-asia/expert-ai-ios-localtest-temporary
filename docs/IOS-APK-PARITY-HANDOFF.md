@@ -142,11 +142,12 @@ working actions.
 - `/doc` and `/nodoc` remain editor-context controls from the Android baseline:
   they include or omit the selected Git file from chat context, while the
   original user message still goes to the Gateway. The iOS client does not
-  intercept `/doc` to route or execute a command. It currently expects a
-  `patchjson` response and applies it locally. That response format is not a
-  verified Gateway tool contract; confirm the deployed document contract and
-  align the adapter before release. The local patch applier validates each
-  anchor against the complete file content before changing the draft.
+  intercept `/doc` to route or execute a command. Gateway-provided tool calls
+  use the existing generic `/mcp` executor without hardcoded tool names. The
+  document editor also applies a targeted `patchjson` response locally, and
+  the patch applier validates each anchor against the complete file content
+  before changing the draft. Verify the Gateway edit, local review, and Git
+  commit flow together on an iPhone before release.
 - On iOS, request notification permission only from contextual notification
   actions such as scheduling or enabling alerts. Ordinary chat sends only read
   the existing permission state, so they cannot trigger an unexpected prompt;
@@ -294,7 +295,7 @@ not a claim of parity.
 | Plain-chat scheduling | Gateway-emitted task tools, task-list visibility, and notifications | iOS runs compatible Gateway tool calls through `/mcp` without local scheduling-language parsing or command hardcoding; verify the Gateway-created task is visible and its lifecycle/notifications work end to end |
 | Scheduled tasks | Gateway execution, local fallback, notifications, retries, pause/cancel, reschedule/delete, history | iOS local Play now uses durable job tracking and stores task identity in recovery intent; empty terminal output is recorded as failure. Both planner surfaces show local persistence errors and retry; native delivery and Gateway acceptance pending |
 | Daily notes | Local storage, date navigation, autosave/flush, AI actions, extracted tasks | Serialized note creation prevents concurrent write loss; save-loss guards remain in source. Device lifecycle verification pending |
-| Archives and `/doc` | Git repository navigation, open/edit/patch/commit, conflict and error handling | File context and `/doc`/`/nodoc` selection are client-side; the client currently expects a `patchjson` reply and applies it locally. This is not verified as a Gateway tool-call contract. Confirm the deployed Gateway schema/behavior, then align this editor adapter before release. Provider, repository and native verification also remain pending |
+| Archives and `/doc` | Git repository navigation, open/edit/patch/commit, conflict and error handling | The original `/doc` message reaches Gateway with the selected file context; compatible Gateway tool calls execute through the generic `/mcp` path, and targeted `patchjson` replies update the local draft. Verify the end-to-end edit/review/commit flow on iPhone. Provider, repository and native verification also remain pending |
 | Workspace and files | Pairing, browse/read/write, transfer, git changes, terminal, preview, sessions | In review |
 | Desktop agent | QR and account discovery, pairing, reconnect, tools, VNC, handoff | In review; iPhone and iPad layouts pending |
 | Voice and media | Speech input/output, camera/gallery, image analysis, share-in to chat | Share extension enabled; media handling still under review |

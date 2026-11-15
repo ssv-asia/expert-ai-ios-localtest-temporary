@@ -99,13 +99,14 @@ persists structured citation metadata.
 
 Item 27 has platform-specific behavior in the current iOS migration checkout.
 Android retains local `/fresh` and `/recent N` history slicing. iOS passes
-Gateway-owned commands through without local slicing or command-mode rewriting;
-confirm those commands are supported by the deployed Gateway. `/doc` and
-`/nodoc` are currently client-side document-context controls, not verified
-Gateway commands: `/doc` includes an open file, `/nodoc` excludes it, and the
-client applies a locally parsed `patchjson` response. The deployed document
-tool contract still needs confirmation. Per-request notes and memory scopes
-remain separately planned.
+Gateway-owned commands through without local slicing or command-mode rewriting.
+The Gateway supplies tool schemas and emits app-compatible tool calls; iOS
+passes those calls through the generic `/mcp` executor without hardcoding
+Gateway tool names. `/doc` and `/nodoc` only include or exclude the open file
+from request context while forwarding the original user message. The existing
+document editor applies a targeted `patchjson` response to the local draft;
+verify the full edit, review, and Git commit flow on device. Per-request notes
+and memory scopes remain separately planned.
 
 Item 28 now has a user-facing memory review, edit, save, and destructive-clear
 surface in Settings. Memory remains bounded by the existing 4,000-character
