@@ -159,7 +159,7 @@ jobs:
           DEVICE_FAMILY=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$APP_PATH/Info.plist")
           EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP_PATH/Info.plist")
           test -x "$APP_PATH/$EXECUTABLE"
-          lipo -verify_arch arm64 "$APP_PATH/$EXECUTABLE"
+          lipo "$APP_PATH/$EXECUTABLE" -verify_arch arm64
           case "$DEVICE_FAMILY" in *1*2*) ;; *) echo "Expected iPhone and iPad support, got $DEVICE_FAMILY"; exit 1 ;; esac
           test "$MINIMUM_IOS" = "16.0"
           test "$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EMBEDDED_EXTENSION_PATH/Info.plist")" = "com.local.expertai.share-extension"

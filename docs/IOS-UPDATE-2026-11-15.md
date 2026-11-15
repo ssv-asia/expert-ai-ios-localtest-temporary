@@ -51,8 +51,10 @@ GitHub run `43710206601` for commit `1746463c9fa0ec2dc3a597438859f9e9a228abbe`
 failed at the missing-client precheck before installing dependencies; it
 produced no IPA. Run `43710702384` for `71ac9a1` was cancelled after its
 no-Google configuration had passed the initial build checks. A replacement
-run with the owner's iOS client ID is being started. Record its result and
-artifact below.
+run `43711087685` with the owner's iOS client ID compiled successfully but
+failed in the package verification because the `lipo -verify_arch` arguments
+were ordered incorrectly. No artifact was uploaded. The workflow command is
+now corrected; record the replacement run and artifact below.
 
 ## Still pending / release limits
 
