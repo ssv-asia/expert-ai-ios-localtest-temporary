@@ -1,0 +1,53 @@
+name: Upload signed iOS build to App Store Connect
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: GitHub Actions run ID that produced the signed IPA artifact
+        required: true
+        type: string
+
+permissions:
+  actions: read
+
+jobs:
+  upload:
+    runs-on: macos-15
+    env:
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+    steps:
+      - name: Download signed IPA artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ExpertAI-App-Store-signed
+          path: release
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare App Store Connect API key
+        env:
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APP_STORE_CONNECT_KEY_ID"
+          test -n "$APP_STORE_CONNECT_ISSUER_ID"
+          test -n "$APP_STORE_CONNECT_PRIVATE_KEY"
+          KEY_DIR="$HOME/.appstoreconnect/private_keys"
+          mkdir -p "$KEY_DIR"
+          KEY_PATH="$KEY_DIR/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          unset APP_STORE_CONNECT_PRIVATE_KEY
+          test -s release/ExpertAI-App-Store.ipa
+          shasum -a 256 -c release/ExpertAI-App-Store.ipa.sha256
+
+      - name: Upload IPA to App Store Connect
+        run: >-
+          xcrun altool --upload-app
+          --file release/ExpertAI-App-Store.ipa
+          --type ios
+          --apiKey "$APP_STORE_CONNECT_KEY_ID"
+          --apiIssuer "$APP_STORE_CONNECT_ISSUER_ID"
+          --output-format json
