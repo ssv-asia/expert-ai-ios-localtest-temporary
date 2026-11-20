@@ -266,7 +266,6 @@ full path before changing either client. App Groups, Share Extension setup,
 iOS keyboard/safe-area adjustments, Apple signing, and App Store upload
 automation are iOS-only and should not be ported to the APK.
 
-
 1. Port the conversation-scoped composer state and cancellation generation
    guard to the APK client. Standard, incognito, project, and history chat
    switches must all invalidate pending setup and abort only the foreground
