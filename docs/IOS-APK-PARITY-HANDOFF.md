@@ -630,13 +630,15 @@ use this iOS repository as a behavioral reference.
   `ios/ExpertAI.xcworkspace` is generated only after `pod install`; CocoaPods is
   not installed on this Mac. Local Xcode 15.2 cannot build the current App Store
   SDK target. GitHub Xcode 27 is the build route.
-- The signed path needs `APPLE_TEAM_ID` as a GitHub Actions variable and an
-  App Store Connect team API key (`APP_STORE_CONNECT_KEY_ID`,
-  `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY`) in GitHub
-  Actions secrets. Xcode can manage distribution signing automatically; a
-  hand-created Apple Distribution certificate/profile is not needed for that
-  workflow. The production App ID and group must have App Groups, Push
-  Notifications, and Associated Domains configured; automatic signing must
+- The owner-provided App Store Connect Team API key is now stored in GitHub
+  Actions secrets under `APP_STORE_CONNECT_KEY_ID`,
+  `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY`; the key
+  was validated locally without exposing its contents. `APPLE_TEAM_ID` is still
+  needed as a repository variable, and draft PR #1 must be merged before GitHub
+  can dispatch the signed workflow from `main`. Xcode can manage distribution
+  signing automatically; a hand-created Apple Distribution certificate/profile
+  is not needed for that workflow. The production App ID and group must have
+  App Groups, Push Notifications, and Associated Domains configured; automatic signing must
   provision both app and extension targets.
 - Archive release blockers remain: validate production Google login, resolve
   the Sign in with Apple/Guideline 4.8 contract, implement StoreKit if paid

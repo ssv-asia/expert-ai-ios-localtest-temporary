@@ -27,7 +27,7 @@
 
 ## Release blockers still open
 
-1. Add the team App Store Connect API key and team ID to GitHub Actions, with a Developer-or-higher role that can perform Xcode automatic signing. Then run the signed workflow and verify the exported IPA signature and bundle IDs.
+1. The App Store Connect team API key ID, issuer ID, and private-key secrets have been added to repository Actions secrets and their names verified (20 November 2026). Still add `APPLE_TEAM_ID` as an Actions variable, merge draft PR #1 so GitHub registers the signed workflow on `main`, then run it and verify the exported IPA signature and bundle IDs.
 2. Confirm the production App ID capabilities and app group above are active in the same Apple Developer team; confirm the share-extension identifier is available to automatic signing.
 3. Create/verify the App Store Connect app record for `com.ssvasia.expertai`, upload the signed IPA, and wait for processing before TestFlight testing.
 4. **Sign in with Apple is a release gate.** The app uses Google sign-in to authenticate the primary Expert AI account, so Apple Guideline 4.8 requires an equivalent login option unless the app qualifies for a listed exception. No Apple token-verification Gateway contract was found in the accessible source. Do not add a decorative button; confirm the Gateway contract, then implement and device-test the complete token exchange. See Apple's [current Login Services guideline](https://developer.apple.com/app-store/review/guidelines/#login-services).
@@ -49,7 +49,7 @@
 - GitHub Actions run [44652994910](https://github.com/ssv-asia/expert-ai-ios-localtest-temporary/actions/runs/44652994910) completed successfully on Xcode 27.1. Expo prebuild, production identity/capability checks, CocoaPods installation, native Release compilation, IPA packaging, and upload-artifact all passed.
 - Artifact: `ExpertAI-production-unsigned` (artifact ID `14592732422`, 62,894,139 bytes, expires 27 November 2026). GitHub reports artifact digest `sha256:b086de60cae04c8ad52d673adc84728f6f0c8fea3eea481fda36d4360870b29a` for the uploaded artifact archive.
 - The artifact contains an **unsigned** production IPA; it is a successful compile/package proof and cannot be uploaded to App Store Connect or installed as a normal signed app. The seven-day artifact is downloadable from the run page above.
-- Next: add the App Store Connect team API key/team ID to GitHub Actions, run `.github/workflows/ios-app-store-signed.yml`, verify the exported App Store signature and embedded app/extension profiles, then upload/validate the build in App Store Connect. Physical-device, Gateway-tool, OAuth, and Apple-review checks remain open as listed above.
+- Next: add the missing `APPLE_TEAM_ID` variable, merge draft PR #1, run `.github/workflows/ios-app-store-signed.yml`, verify the exported App Store signature and embedded app/extension profiles, then upload/validate the build in App Store Connect. Physical-device, Gateway-tool, OAuth, and Apple-review checks remain open as listed above.
 
 ## Gateway parity build — 20 November 2026
 
@@ -60,3 +60,4 @@
 - A replacement build, run [44660079330](https://github.com/ssv-asia/expert-ai-ios-localtest-temporary/actions/runs/44660079330), was also dispatched on the same SHA because the first run temporarily appeared stalled. It is redundant; run 44657768664 later completed successfully. Check the replacement's state before cancelling or using it.
 - Signed build remains dependent on the owner adding `APPLE_TEAM_ID` and the three `APP_STORE_CONNECT_*` values to GitHub Actions, then dispatching the signed workflow. Device acceptance and the other release blockers above are still open.
 - The unsigned build workflow now ignores documentation-only and workflow-file-only pushes on this branch, preventing lengthy native builds for handoff edits. `workflow_dispatch` remains available when an intentional unsigned compile is needed; the signed workflow remains separately manual.
+- The owner-provided App Store Connect `.p8` key was validated locally without printing its contents. GitHub Actions now has `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY` set; secret values are not retrievable for inspection. `APPLE_TEAM_ID` remains unset, and no signing workflow has run yet.
