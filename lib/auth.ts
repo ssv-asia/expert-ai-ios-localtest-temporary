@@ -173,13 +173,16 @@ export function getActiveTier(session: Session | null): Tier {
 }
 
 async function persist(session: Session) {
-  cached = session;
   const value = JSON.stringify(session);
   if (Platform.OS === 'web') {
     try { localStorage.setItem(STORE_KEY, value); } catch { /* browser storage may be blocked */ }
   } else {
     await SecureStore.setItemAsync(STORE_KEY, value);
   }
+  // Publish the new in-memory session only after native persistence succeeds.
+  // Otherwise a SecureStore failure can leave auth helpers using a session
+  // that the UI reported as a failed sign-in and that will disappear on restart.
+  cached = session;
 }
 
 export async function signOut(): Promise<void> {
@@ -414,6 +417,15 @@ async function startTrial(): Promise<StartResult> {
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     throw new Error(data?.error || `Couldn't start trial (${response.status})`);
+  }
+  if (
+    typeof data?.nonce !== 'string' ||
+    !data.nonce ||
+    !Number.isFinite(data.expiresIn) ||
+    data.expiresIn <= 0 ||
+    (data.demo !== true && typeof data.authUrl !== 'string')
+  ) {
+    throw new Error('The trial service returned an incomplete sign-in response. Please try again later.');
   }
   return data as StartResult;
 }

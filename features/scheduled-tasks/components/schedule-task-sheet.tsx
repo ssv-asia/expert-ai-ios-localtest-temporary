@@ -21,8 +21,11 @@ interface ScheduleTaskSheetProps {
   /** Pre-filled when rescheduling an existing task; omitted for a brand new one. */
   initialPrompt?: string;
   initialTime?: number;
+  isRescheduling?: boolean;
   onClose: () => void;
-  onSchedule: (prompt: string, scheduledFor: number) => void;
+  /** Called after the native iOS modal dismissal transition completes. */
+  onDismiss?: () => void;
+  onSchedule: (prompt: string, scheduledFor: number) => void | Promise<void>;
 }
 
 function startOfDay(d: Date): Date {
@@ -68,7 +71,9 @@ export function ScheduleTaskSheet({
   colors,
   initialPrompt,
   initialTime,
+  isRescheduling = false,
   onClose,
+  onDismiss,
   onSchedule,
 }: ScheduleTaskSheetProps) {
   const insets = useSafeAreaInsets();
@@ -83,9 +88,13 @@ export function ScheduleTaskSheet({
   const [minute, setMinute] = useState(0); // 0-59, stepped by 5
   const [isPM, setIsPM] = useState(false);
   const [selectedTime, setSelectedTime] = useState<Date | null>(null);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!visible) return;
+    setSubmitting(false);
+    setSubmitError(null);
     setPrompt(initialPrompt ?? '');
     const base = initialTime ? new Date(initialTime) : null;
     if (base) {
@@ -124,9 +133,21 @@ export function ScheduleTaskSheet({
     setCustomOpen(false);
   };
 
-  const handleConfirm = () => {
-    if (!canSchedule || !effectiveTime) return;
-    onSchedule(prompt.trim(), effectiveTime.getTime());
+  const handleConfirm = async () => {
+    if (!canSchedule || !effectiveTime || submitting) return;
+    if (Platform.OS !== 'ios') {
+      onSchedule(prompt.trim(), effectiveTime.getTime());
+      return;
+    }
+    setSubmitting(true);
+    setSubmitError(null);
+    try {
+      await onSchedule(prompt.trim(), effectiveTime.getTime());
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : 'The task could not be scheduled. Please try again.');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const stepHour = (delta: number) => {
@@ -151,7 +172,7 @@ export function ScheduleTaskSheet({
   const inputBg = isDark ? '#1E1E1E' : '#F6F6F6';
 
   return (
-    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible={visible} transparent animationType="fade" onRequestClose={onClose} onDismiss={onDismiss}>
       <KeyboardAvoidingView
         style={styles.flex}
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -167,7 +188,7 @@ export function ScheduleTaskSheet({
             <View style={[styles.handle, { backgroundColor: colors.sheetHandle }]} />
             <View style={styles.headerRow}>
               <Text style={[styles.title, { color: colors.text }]}>
-                {initialPrompt !== undefined ? 'Reschedule task' : 'Schedule a task'}
+                {(Platform.OS === 'ios' ? isRescheduling : initialPrompt !== undefined) ? 'Reschedule task' : 'Schedule a task'}
               </Text>
               <Pressable onPress={onClose} hitSlop={10}>
                 <Ionicons name="close" size={22} color={colors.textSecondary} />
@@ -290,18 +311,23 @@ export function ScheduleTaskSheet({
                     : 'Pick a time in the future'}
                 </Text>
               )}
+              {Platform.OS === 'ios' && submitError ? (
+                <Text accessibilityRole="alert" style={[styles.previewText, { color: '#D92D20', marginTop: 10 }]}>
+                  {submitError}
+                </Text>
+              ) : null}
             </ScrollView>
 
             <Pressable
               onPress={handleConfirm}
-              disabled={!canSchedule}
+              disabled={!canSchedule || submitting}
               style={({ pressed }) => [
                 styles.confirmBtn,
-                { backgroundColor: isDark ? '#E8E8E8' : '#1A1A1A', opacity: !canSchedule ? 0.4 : pressed ? 0.8 : 1 },
+                { backgroundColor: isDark ? '#E8E8E8' : '#1A1A1A', opacity: !canSchedule || submitting ? 0.4 : pressed ? 0.8 : 1 },
               ]}
             >
               <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 15, color: isDark ? '#1A1A1A' : '#FFFFFF' }}>
-                {initialPrompt !== undefined ? 'Reschedule' : 'Schedule'}
+                {Platform.OS === 'ios' && submitting ? 'Scheduling…' : (Platform.OS === 'ios' ? isRescheduling : initialPrompt !== undefined) ? 'Reschedule' : 'Schedule'}
               </Text>
             </Pressable>
             </View>

@@ -1,6 +1,7 @@
 import * as Notifications from 'expo-notifications';
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
+import * as SecureStore from 'expo-secure-store';
 
 // Curated "by the way" notifications — rotated through the month at a calm cadence.
 // Kept broad on purpose: Expert AI is a general research/reasoning assistant, not only
@@ -57,18 +58,35 @@ const NOTIFICATION_MESSAGES = [
   { title: 'Here when you need it', body: 'Research, writing, planning, quick facts — Expert AI is ready when you are.' },
   { title: 'Make the next hour easier', body: 'Tell Expert AI what you are about to do and ask how to do it faster.' },
 ];
+const BY_THE_WAY_PREFERENCE_KEY = 'simple_chat_notifications_enabled';
 
 // System notification triggers (for agent mode, simple chat, tasks)
 export interface SystemNotification {
-  type: 'agent_ready' | 'task_completed' | 'task_failed' | 'high_complexity_query' | 'response_ready';
+  type: 'agent_ready' | 'task_completed' | 'task_failed' | 'high_complexity_query' | 'response_ready' | 'response_failed';
   title: string;
   body: string;
   data?: Record<string, string>;
 }
 
-let cachedPushToken: string | null | undefined;
+export type NotificationScheduleResult =
+  | { ok: true; scheduled: number }
+  | { ok: false; reason: 'unsupported' | 'permission-denied' | 'schedule-failed' };
+
+// Gateway chat jobs receive Expo Push Service tokens, not native APNs/FCM
+// device tokens. addPushTokenListener emits the latter, so it must only
+// invalidate the cached Expo token and never overwrite it with event.data.
+let cachedExpoPushToken: string | null | undefined;
+let cachedAndroidPushToken: string | null | undefined;
+let notificationHandlerConfigured = false;
+let pushTokenListenerRegistered = false;
 
 export class NotificationsService {
+  static async setByTheWayNotificationsPreference(enabled: boolean): Promise<void> {
+    const value = String(enabled);
+    if (Platform.OS === 'web') localStorage.setItem(BY_THE_WAY_PREFERENCE_KEY, value);
+    else await SecureStore.setItemAsync(BY_THE_WAY_PREFERENCE_KEY, value);
+  }
+
   /** Subscribe to taps on a system notification so callers can reconcile or
    * route immediately, including when the app was already in memory. */
   static addResponseListener(listener: (data: Record<string, unknown>) => void) {
@@ -91,18 +109,24 @@ export class NotificationsService {
     }
   }
 
+  /** Clear a cold-start response after the app has consumed its route. Without
+   * this, a failed scheduled task could be retried again on every relaunch. */
+  static clearLastResponse() {
+    if (Platform.OS === 'web') return;
+    try {
+      Notifications.clearLastNotificationResponse();
+    } catch {
+      // Some native implementations may not expose this API; routing still
+      // remains guarded by the task status and the in-memory duplicate check.
+    }
+  }
+
   static async init() {
     if (Platform.OS === 'web') return;
 
-    // Request notification permissions
-    const { status: existingStatus } = await Notifications.getPermissionsAsync();
-    let finalStatus = existingStatus;
-    if (existingStatus !== 'granted') {
-      const { status } = await Notifications.requestPermissionsAsync();
-      finalStatus = status;
-    }
-
-    if (finalStatus !== 'granted') {
+    // Preserve Android's existing startup permission behavior. iOS requests
+    // permission contextually when the user schedules work or enables alerts.
+    if (Platform.OS === 'android' && !(await this.requestPermission())) {
       console.warn('[Notifications] Permission denied');
       return;
     }
@@ -117,48 +141,127 @@ export class NotificationsService {
       }).catch((err) => console.warn('[Notifications] Failed to configure response channel:', err));
     }
 
-    // Configure notification behavior
-    Notifications.setNotificationHandler({
-      handleNotification: async () => ({
-        shouldShowAlert: true,
-        shouldPlaySound: true,
-        shouldSetBadge: true,
-        // Added in a later expo-notifications major version — granular control
-        // over the two Android presentation surfaces (heads-up banner vs. the
-        // notification shade's list entry). Both true matches this app's prior
-        // "just show it" behavior under the old shouldShowAlert-only API.
-        shouldShowBanner: true,
-        shouldShowList: true,
-      }),
-    });
-    Notifications.addPushTokenListener((event) => {
-      cachedPushToken = event.data || null;
-    });
+    if (!notificationHandlerConfigured) {
+      Notifications.setNotificationHandler({
+        handleNotification: async () => ({
+          shouldShowAlert: true,
+          shouldPlaySound: true,
+          shouldSetBadge: true,
+          shouldShowBanner: true,
+          shouldShowList: true,
+        }),
+      });
+      notificationHandlerConfigured = true;
+    }
+    if (!pushTokenListenerRegistered) {
+      Notifications.addPushTokenListener((event) => {
+        if (Platform.OS === 'android') {
+          // Preserve the APK's established token listener behavior in this
+          // iOS-focused migration change.
+          cachedAndroidPushToken = event.data || null;
+          return;
+        }
+        // A rotated native token makes the associated Expo token stale. Fetch
+        // the new Expo token the next time a durable job needs push delivery.
+        cachedExpoPushToken = undefined;
+      });
+      pushTokenListenerRegistered = true;
+    }
   }
 
-  /** Returns the Expo push token when this native build can provide one. */
+  /** Ask for permission only when the user starts a notification-dependent action. */
+  static async requestPermission(): Promise<boolean> {
+    if (Platform.OS === 'web') return false;
+    try {
+      let permission = await Notifications.getPermissionsAsync();
+      if (permission.status !== 'granted' && permission.canAskAgain) {
+        permission = await Notifications.requestPermissionsAsync();
+      }
+      return permission.status === 'granted';
+    } catch (err) {
+      console.warn('[Notifications] Failed to check permission:', err);
+      return false;
+    }
+  }
+
+  /** Check existing permission without prompting. Used to restore reminders
+   * after users enable notifications later in the system Settings app. */
+  static async hasPermission(): Promise<boolean> {
+    if (Platform.OS === 'web') return false;
+    try {
+      return (await Notifications.getPermissionsAsync()).status === 'granted';
+    } catch (err) {
+      console.warn('[Notifications] Failed to read permission:', err);
+      return false;
+    }
+  }
+
+  /** Pending local notifications, or null if iOS could not return the queue. */
+  static async getScheduledNotificationIds(): Promise<Set<string> | null> {
+    if (Platform.OS === 'web') return new Set();
+    try {
+      const scheduled = await Notifications.getAllScheduledNotificationsAsync();
+      return new Set(scheduled.map((item) => item.identifier));
+    } catch (err) {
+      console.warn('[Notifications] Failed to inspect scheduled notifications:', err);
+      return null;
+    }
+  }
+
+  /** Returns an Expo push token only when permission is already granted.
+   * Ordinary chat sends must not trigger a notification permission prompt;
+   * scheduling flows request it contextually before attempting reminders. */
   static async getPushToken(): Promise<string | undefined> {
     if (Platform.OS === 'web') return undefined;
-    if (cachedPushToken !== undefined) return cachedPushToken || undefined;
+    if (Platform.OS === 'android' && cachedAndroidPushToken !== undefined) {
+      return cachedAndroidPushToken || undefined;
+    }
     try {
       const projectId = Constants.expoConfig?.extra?.eas?.projectId || Constants.easConfig?.projectId;
-      if (!projectId || (await Notifications.getPermissionsAsync()).status !== 'granted') {
-        cachedPushToken = null;
+      if (Platform.OS === 'android' && (!projectId || (await Notifications.getPermissionsAsync()).status !== 'granted')) {
+        cachedAndroidPushToken = null;
+        return undefined;
+      }
+      const permissionGranted = (await Notifications.getPermissionsAsync()).status === 'granted';
+      if (!permissionGranted) {
+        if (Platform.OS === 'android') cachedAndroidPushToken = null;
+        else cachedExpoPushToken = null;
+        return undefined;
+      }
+      if (Platform.OS === 'android' && cachedAndroidPushToken) return cachedAndroidPushToken;
+      if (cachedExpoPushToken) return cachedExpoPushToken;
+      if (!projectId) {
+        if (Platform.OS === 'android') cachedAndroidPushToken = null;
+        else cachedExpoPushToken = null;
         return undefined;
       }
       const token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-      cachedPushToken = token || null;
+      if (Platform.OS === 'android') cachedAndroidPushToken = token || null;
+      else cachedExpoPushToken = token || null;
       return token || undefined;
     } catch (err) {
-      cachedPushToken = null;
+      if (Platform.OS === 'android') cachedAndroidPushToken = null;
+      else cachedExpoPushToken = null;
       console.warn('[Notifications] Failed to obtain push token:', err);
       return undefined;
     }
   }
 
   // Schedule rotating by-the-way notifications at a 20-minute cadence
-  static async scheduleByTheWayNotifications(enabled: boolean = true) {
-    if (Platform.OS === 'web') return;
+  static async scheduleByTheWayNotifications(enabled: boolean = true): Promise<boolean> {
+    return (await this.scheduleByTheWayNotificationsWithResult(enabled)).ok;
+  }
+
+  /** Detailed result for settings UI; a denied permission is different from a
+   * granted permission where iOS could not queue any requests. */
+  static async scheduleByTheWayNotificationsWithResult(
+    enabled: boolean = true,
+  ): Promise<NotificationScheduleResult> {
+    if (Platform.OS === 'web') return { ok: false, reason: 'unsupported' };
+
+    if (enabled && Platform.OS === 'ios' && !(await this.requestPermission())) {
+      return { ok: false, reason: 'permission-denied' };
+    }
 
     // Remove only this feature's scheduled tips. A global cancel would also
     // delete response-ready and task-completion notifications that are the
@@ -168,13 +271,18 @@ export class NotificationsService {
       .filter((item) => item.content.data && (item.content.data as Record<string, unknown>).kind === 'by_the_way')
       .map((item) => Notifications.cancelScheduledNotificationAsync(item.identifier).catch(() => {})));
 
-    if (!enabled) return;
+    if (!enabled) return { ok: true, scheduled: 0 };
 
-    // Schedule notifications every 20 minutes for the next 30 days
-    const intervalMinutes = 20;
+    // Keep iOS tip requests sparse so they cannot crowd out user-scheduled
+    // task reminders in the system's finite pending-notification queue.
+    const intervalMinutes = Platform.OS === 'ios' ? 120 : 20;
     const maxNotifications = Math.floor((30 * 24 * 60) / intervalMinutes);
+    const notificationCount = Platform.OS === 'ios'
+      ? Math.min(16, NOTIFICATION_MESSAGES.length * 6)
+      : Math.min(maxNotifications, NOTIFICATION_MESSAGES.length * 6);
 
-    for (let i = 0; i < Math.min(maxNotifications, NOTIFICATION_MESSAGES.length * 6); i++) {
+    let scheduledCount = 0;
+    for (let i = 0; i < notificationCount; i++) {
       const message = NOTIFICATION_MESSAGES[i % NOTIFICATION_MESSAGES.length];
       const triggerSeconds = intervalMinutes * 60 * i + 60; // Start 1 min from now
 
@@ -193,17 +301,25 @@ export class NotificationsService {
             seconds: triggerSeconds,
           },
         });
+        scheduledCount += 1;
       } catch (err) {
         console.warn('[Notifications] Failed to schedule notification:', err);
       }
     }
+    return scheduledCount > 0
+      ? { ok: true, scheduled: scheduledCount }
+      : { ok: false, reason: 'schedule-failed' };
   }
 
   // Send immediate system notification (e.g., task completed, agent ready)
-  static async sendSystemNotification(notification: SystemNotification) {
-    if (Platform.OS === 'web') return;
+  static async sendSystemNotification(notification: SystemNotification): Promise<boolean> {
+    if (Platform.OS === 'web') return false;
 
     try {
+      // A response completing is not itself a consent gesture. Request access
+      // in task scheduling or the notification settings control; all other
+      // notifications use only permission the user has already granted.
+      if (!(await this.hasPermission())) return false;
       await Notifications.scheduleNotificationAsync({
         content: {
           title: notification.title,
@@ -215,33 +331,47 @@ export class NotificationsService {
         } as Notifications.NotificationContentInput,
         trigger: { type: Notifications.SchedulableTriggerInputTypes.TIME_INTERVAL, seconds: 1 },
       });
+      return true;
     } catch (err) {
       console.warn('[Notifications] Failed to send system notification:', err);
+      return false;
     }
   }
 
   // System notification helpers
-  static notifyTaskCompleted(taskName: string) {
+  static notifyTaskCompleted(_taskName: string, taskId?: string, conversationId?: string) {
+    const isAndroid = Platform.OS === 'android';
     return this.sendSystemNotification({
       type: 'task_completed',
       title: 'Task completed',
-      body: `"${taskName}" has finished running.`,
+      body: isAndroid ? `"${_taskName}" has finished running.` : 'A scheduled task finished. Open Expert AI to view the result.',
+      data: isAndroid ? {} : {
+        type: 'task_completed',
+        ...(taskId ? { taskId } : {}),
+        ...(conversationId ? { conversationId } : {}),
+      },
     });
   }
 
-  static notifyTaskFailed(taskName: string, reason?: string) {
+  static notifyTaskFailed(_taskName: string, _reason?: string, taskId?: string, conversationId?: string) {
+    const isAndroid = Platform.OS === 'android';
     return this.sendSystemNotification({
       type: 'task_failed',
-      title: 'Task failed',
-      body: `"${taskName}" encountered an error${reason ? `: ${reason}` : ''}.`,
+      title: isAndroid ? 'Task failed' : 'Task needs attention',
+      body: isAndroid ? `"${_taskName}" encountered an error${_reason ? `: ${_reason}` : ''}.` : 'A scheduled task could not finish. Open Expert AI to review it.',
+      data: isAndroid ? {} : {
+        type: 'task_failed',
+        ...(taskId ? { taskId } : {}),
+        ...(conversationId ? { conversationId } : {}),
+      },
     });
   }
 
-  static notifyAgentReady(workspaceName: string) {
+  static notifyAgentReady(_workspaceName: string) {
     return this.sendSystemNotification({
       type: 'agent_ready',
       title: 'Agent ready',
-      body: `Your agent in "${workspaceName}" is ready to chat.`,
+      body: Platform.OS === 'android' ? `Your agent in "${_workspaceName}" is ready to chat.` : 'Your connected agent is ready. Open Expert AI to continue.',
     });
   }
 
@@ -261,25 +391,42 @@ export class NotificationsService {
     });
   }
 
+  static notifyResponseFailed(conversationId?: string) {
+    return this.sendSystemNotification({
+      type: 'response_failed',
+      title: 'Response needs attention',
+      body: 'A response could not finish. Open Expert AI to review or retry it.',
+      data: {
+        type: 'response_failed',
+        ...(conversationId ? { conversationId } : {}),
+      },
+    });
+  }
+
   // ---- Scheduled tasks -----------------------------------------------------
   // Legacy/local fallback for scheduled tasks. Durable tasks created through
   // simple-chat are executed by the gateway and use its completion push; this
   // reminder remains available when the gateway cannot accept a job.
   static async scheduleTaskReminder(
     taskId: string,
-    prompt: string,
+    _prompt: string,
     whenMs: number,
   ): Promise<string | null> {
     if (Platform.OS === 'web') return null;
     const when = new Date(whenMs);
     if (when.getTime() <= Date.now() + 5000) return null; // too soon / in the past
     try {
+      if (Platform.OS === 'ios' && !(await this.requestPermission())) return null;
       return await Notifications.scheduleNotificationAsync({
         content: {
           title: '⏰ Scheduled task is due',
-          body: prompt.length > 90 ? `${prompt.slice(0, 90)}…` : prompt,
+          body: Platform.OS === 'android'
+            ? (_prompt.length > 90 ? `${_prompt.slice(0, 90)}…` : _prompt)
+            : 'Open Expert AI to review or run your scheduled task.',
           sound: 'default',
-          data: { kind: 'scheduled_task', taskId },
+          data: Platform.OS === 'android'
+            ? { kind: 'scheduled_task', taskId }
+            : { kind: 'scheduled_task', taskId, scheduledFor: String(whenMs) },
         },
         trigger: { type: Notifications.SchedulableTriggerInputTypes.DATE, date: when },
       });

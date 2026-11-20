@@ -37,29 +37,76 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${archivesPath}.tmp`;
+    const backupPath = `${archivesPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(archivesPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(archivesPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: archivesPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(archivesPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: archivesPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(archivesPath, value);
 }
 
 async function readAll(): Promise<Archive[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [archivesPath, `${archivesPath}.bak`, `${archivesPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== archivesPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${archivesPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(archivesPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${archivesPath}.tmp`, to: archivesPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
+    }
+    if (foundSnapshot) throw new Error('No valid saved archives snapshot found.');
     cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved archives have an invalid format.');
+      cache = parsed;
+    } catch { cache = []; }
   }
   return cache;
 }
 
-async function writeAll(archives: Archive[]): Promise<void> {
+async function writeAll(update: Archive[] | ((current: Archive[]) => Archive[])): Promise<void> {
   const operation = writeChain.then(async () => {
-    cache = archives;
-    try {
-      await writeKey(JSON.stringify(archives));
-    } catch {
-      /* best-effort */
+    const archives = typeof update === 'function' ? update([...await readAll()]) : update;
+    if (Platform.OS === 'ios') {
+      try {
+        await writeKey(JSON.stringify(archives));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${archivesPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
+      cache = archives;
+      return;
     }
+    cache = archives;
+    try { await writeKey(JSON.stringify(archives)); } catch { /* preserve existing best-effort behavior */ }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
   await operation;
@@ -75,19 +122,18 @@ export function makeArchiveId(): string {
 }
 
 export async function addArchive(name: string, repoFullName: string): Promise<Archive> {
-  const all = await readAll();
-  if (all.some((a) => a.repoFullName.toLowerCase() === repoFullName.toLowerCase())) {
-    throw new Error('This repository is already connected as an archive.');
-  }
   const archive: Archive = { id: makeArchiveId(), name: name.trim() || repoFullName, repoFullName, addedAt: Date.now() };
-  all.unshift(archive);
-  await writeAll(all);
+  await writeAll((current) => {
+    if (current.some((item) => item.repoFullName.toLowerCase() === repoFullName.toLowerCase())) {
+      throw new Error('This repository is already connected as an archive.');
+    }
+    return [archive, ...current];
+  });
   return archive;
 }
 
 export async function removeArchive(id: string): Promise<void> {
-  const all = await readAll();
-  await writeAll(all.filter((a) => a.id !== id));
+  await writeAll((current) => current.filter((archive) => archive.id !== id));
 }
 
 /** Accepts "owner/repo", a full https://github.com/owner/repo URL, or a URL

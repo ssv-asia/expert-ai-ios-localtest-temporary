@@ -43,32 +43,81 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${documentsPath}.tmp`;
+    const backupPath = `${documentsPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(documentsPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(documentsPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: documentsPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(documentsPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: documentsPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(documentsPath, value);
 }
 
 async function readAll(): Promise<StoredDocument[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [documentsPath, `${documentsPath}.bak`, `${documentsPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== documentsPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${documentsPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(documentsPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${documentsPath}.tmp`, to: documentsPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
+    }
+    if (foundSnapshot) throw new Error('No valid saved documents snapshot found.');
     cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved documents have an invalid format.');
+      cache = parsed;
+    } catch {
+      cache = [];
+    }
   }
   return cache;
 }
 
-async function writeAll(docs: StoredDocument[]): Promise<void> {
+async function writeAll(update: StoredDocument[] | ((current: StoredDocument[]) => StoredDocument[])): Promise<void> {
   const operation = writeChain.then(async () => {
+    const docs = typeof update === 'function' ? update([...await readAll()]) : update;
     const bounded = docs
       .slice()
       .sort((a, b) => b.updatedAt - a.updatedAt)
       .slice(0, MAX_DOCUMENTS);
-    cache = bounded;
-    try {
-      await writeKey(JSON.stringify(bounded));
-    } catch {
-      /* best-effort — losing a document write is recoverable, never crash the chat over it */
+    if (Platform.OS === 'ios') {
+      try {
+        await writeKey(JSON.stringify(bounded));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${documentsPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
+      cache = bounded;
+    } else {
+      cache = bounded;
+      try { await writeKey(JSON.stringify(bounded)); } catch { /* preserve existing best-effort behavior */ }
     }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
@@ -87,16 +136,16 @@ export async function getDocument(id: string): Promise<StoredDocument | null> {
 }
 
 export async function saveDocument(doc: StoredDocument): Promise<void> {
-  const all = await readAll();
-  const idx = all.findIndex((d) => d.id === doc.id);
-  if (idx >= 0) all[idx] = doc;
-  else all.unshift(doc);
-  await writeAll(all);
+  await writeAll((current) => {
+    const idx = current.findIndex((document) => document.id === doc.id);
+    if (idx >= 0) current[idx] = doc;
+    else current.unshift(doc);
+    return current;
+  });
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const all = await readAll();
-  await writeAll(all.filter((d) => d.id !== id));
+  await writeAll((current) => current.filter((document) => document.id !== id));
 }
 
 export function makeDocumentId(): string {

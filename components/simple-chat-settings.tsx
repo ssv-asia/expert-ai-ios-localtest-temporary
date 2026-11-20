@@ -17,8 +17,9 @@ import * as SecureStore from 'expo-secure-store';
 
 import { Colors, Fonts } from '@/constants/theme';
 import { useColorScheme } from '@/hooks/use-color-scheme';
-import { useThemeStore, type ThemePreset, type ThemeColors } from '@/lib/theme-store';
+import { useThemeStore, type ThemePreset } from '@/lib/theme-store';
 import { NotificationsService } from '@/lib/notifications-service';
+import { useScheduledTasksStore } from '@/features/scheduled-tasks/store';
 import { useAppSettingsStore } from '@/features/settings/store';
 import { AECKnowledgeSection } from '@/components/aec-knowledge-section';
 import { getSession, type Session } from '@/lib/auth';
@@ -42,9 +43,9 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
   // render and won't itself trigger a re-render) so this sheet's scroll
   // height actually updates if the device rotates while it's open.
   const { height: windowHeight } = useWindowDimensions();
-  const { settings, setPreset, setFontSize, setCustomColors, getColors } = useThemeStore();
-  const [customColorMode, setCustomColorMode] = useState(false);
+  const { settings, setPreset, getColors } = useThemeStore();
   const [notificationsEnabled, setNotificationsEnabled] = useState(false);
+  const [preferenceError, setPreferenceError] = useState<string | null>(null);
   const [loadingNotifications, setLoadingNotifications] = useState(true);
   const [session, setSession] = useState<Session | null>(null);
   const [themeColors, setThemeColors] = useState(getColors());
@@ -184,18 +185,42 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
   };
 
   const handleNotificationToggle = async (value: boolean) => {
+    setPreferenceError(null);
+    const previousValue = notificationsEnabled;
     try {
-      setNotificationsEnabled(value);
+      const notificationResult = await NotificationsService.scheduleByTheWayNotificationsWithResult(value);
+      if (Platform.OS === 'ios' && value && !notificationResult.ok) {
+        try {
+          await SecureStore.setItemAsync(NOTIFICATIONS_STORAGE_KEY, 'false');
+          setNotificationsEnabled(false);
+        } catch {
+          setNotificationsEnabled(previousValue);
+          setPreferenceError('Notification preference could not be saved. Try again.');
+          return;
+        }
+        setPreferenceError(notificationResult.reason === 'permission-denied'
+          ? 'Allow Expert AI notifications in iPhone Settings, then turn this on again.'
+          : 'iPhone could not schedule these notifications. Free up notification space or try again later.');
+        return;
+      }
       if (Platform.OS === 'web') {
         localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, String(value));
       } else {
         await SecureStore.setItemAsync(NOTIFICATIONS_STORAGE_KEY, String(value));
       }
-      // Schedule or cancel notifications
-      await NotificationsService.scheduleByTheWayNotifications(value);
+      setNotificationsEnabled(value);
+      if (Platform.OS === 'ios' && value) {
+        try {
+          await useScheduledTasksStore.getState().restoreMissingReminders();
+        } catch {
+          setPreferenceError('Helpful tips are on, but one or more scheduled task reminders could not be restored. Open Scheduled Tasks and retry.');
+        }
+      }
     } catch (err) {
       console.warn('[Settings] Failed to update notifications:', err);
-      setNotificationsEnabled(!value);
+      setNotificationsEnabled(previousValue);
+      await NotificationsService.scheduleByTheWayNotifications(previousValue).catch(() => false);
+      setPreferenceError('Notification preference could not be saved. Try again.');
     }
   };
 
@@ -209,11 +234,6 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
   const themes: (Exclude<ThemePreset, 'custom'>)[] = materialYouSupported
     ? ['dark', 'expertAI', 'materialYou', 'light']
     : ['dark', 'expertAI', 'light'];
-
-  const handleFontSizeChange = (delta: number) => {
-    const newSize = Math.max(0.8, Math.min(1.2, settings.fontSize + delta));
-    setFontSize(newSize);
-  };
 
   // Material You's preview reflects the ACTUAL device palette (it's the whole
   // point — wallpaper-driven, different per device) rather than a fixed swatch.
@@ -289,8 +309,8 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
                     <Pressable
                       key={theme}
                       onPress={() => {
-                        setPreset(theme);
-                        setCustomColorMode(false);
+                        setPreferenceError(null);
+                        setPreset(theme).catch(() => setPreferenceError('Theme could not be saved. Your previous theme was restored.'));
                       }}
                       style={[
                         styles.themeButton,
@@ -339,16 +359,6 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
             </View>
 
 
-            {/* Custom Colors */}
-            {customColorMode && (
-              <View style={styles.section}>
-                <Text style={[styles.sectionTitle, { color: colors.text }]}>Custom Colors</Text>
-                <Text style={[styles.hint, { color: colors.textSecondary, marginBottom: 12 }]}>
-                  Coming soon: Full color customization
-                </Text>
-              </View>
-            )}
-
             {/* Notifications */}
             <View style={styles.section}>
               <Text style={[styles.sectionTitle, { color: colors.text }]}>Notifications</Text>
@@ -370,6 +380,7 @@ export const SimpleChatSettings: React.FC<SimpleChatSettingsProps> = ({ visible,
                   />
                 )}
               </View>
+              {preferenceError ? <Text accessibilityRole="alert" style={[styles.hint, { color: colors.errorColor, marginTop: 8 }]}>{preferenceError}</Text> : null}
               <Text style={[styles.hint, { color: colors.textSecondary, marginTop: 12 }]}>
                 Get research tips, use case ideas, and fascinating tech facts — or turn them off anytime
               </Text>

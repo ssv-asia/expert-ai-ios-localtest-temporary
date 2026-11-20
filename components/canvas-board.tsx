@@ -3,7 +3,7 @@
 // Wrapped in its own GestureHandlerRootView so it works regardless of what
 // wraps the screen it's mounted in (defensive — nesting is harmless).
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Pressable, Text, TextInput, View } from 'react-native';
+import { Platform, Pressable, Text, TextInput, View } from 'react-native';
 import { GestureHandlerRootView, Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   useAnimatedStyle,
@@ -125,6 +125,8 @@ function CanvasNodeView({
 
 export function CanvasBoardView({ conversationId }: { conversationId: string }) {
   const [board, setBoard] = useState<CanvasBoard>(emptyCanvasBoard());
+  const [storageError, setStorageError] = useState<string | null>(null);
+  const [retryVersion, setRetryVersion] = useState(0);
   const docIdRef = useRef<string>(`canvas_${conversationId}`);
   const loadedRef = useRef(false);
   const boardTranslateX = useSharedValue(0);
@@ -137,14 +139,26 @@ export function CanvasBoardView({ conversationId }: { conversationId: string }) 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const existing = await getDocument(docIdRef.current);
-      if (!cancelled && existing) setBoard(parseCanvasBoard(existing.content));
-      loadedRef.current = true;
+      if (Platform.OS !== 'ios') {
+        const existing = await getDocument(docIdRef.current);
+        if (!cancelled && existing) setBoard(parseCanvasBoard(existing.content));
+        loadedRef.current = true;
+        return;
+      }
+      try {
+        const existing = await getDocument(docIdRef.current);
+        if (!cancelled && existing) setBoard(parseCanvasBoard(existing.content));
+        if (!cancelled) setStorageError(null);
+      } catch {
+        if (!cancelled) setStorageError('Canvas data could not be loaded. Changes may not be saved.');
+      } finally {
+        if (!cancelled) loadedRef.current = true;
+      }
     })();
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [retryVersion]);
 
   const persist = useCallback(
     (next: CanvasBoard) => {
@@ -157,7 +171,12 @@ export function CanvasBoardView({ conversationId }: { conversationId: string }) 
         createdAt: Date.now(),
         updatedAt: Date.now(),
       };
-      saveDocument(doc).catch(() => {});
+      if (Platform.OS !== 'ios') {
+        saveDocument(doc).catch(() => {});
+        return;
+      }
+      setStorageError(null);
+      saveDocument(doc).then(() => setStorageError(null)).catch(() => setStorageError('Canvas changes could not be saved. Keep this canvas open and retry.'));
     },
     [conversationId],
   );
@@ -237,6 +256,11 @@ export function CanvasBoardView({ conversationId }: { conversationId: string }) 
   return (
     <GestureHandlerRootView style={{ flex: 1, backgroundColor: '#0e0e10' }}>
       <View style={{ flex: 1, overflow: 'hidden' }}>
+        {Platform.OS === 'ios' && storageError ? (
+          <Pressable accessibilityRole="button" onPress={() => setRetryVersion((v) => v + 1)} style={{ padding: 8, backgroundColor: '#fff0f0', zIndex: 2 }}>
+            <Text accessibilityRole="alert" style={{ color: '#9b1c1c', fontFamily: Fonts.sans, fontSize: 12 }}>{storageError} Tap to retry loading.</Text>
+          </Pressable>
+        ) : null}
         <GestureDetector gesture={composedGesture}>
           <Animated.View style={[{ width: BOARD_WIDTH, height: BOARD_HEIGHT }, boardStyle]}>
             {board.nodes.map((node) => (

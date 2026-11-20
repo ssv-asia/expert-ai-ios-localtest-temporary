@@ -1,10 +1,10 @@
 // Voice-to-text compose input — NOT a real-time conversational voice mode
 // (that needs paid streaming STT+TTS infra this app doesn't have). This is
-// Android's own on-device SpeechRecognizer: tap, speak, the words land in the
-// text box exactly like typing. Zero cost, zero server involvement, works
-// offline on most devices once the on-device model is present.
+// The platform speech-recognition service: tap, speak, and the recognized words
+// land in the text box like typing. Availability and offline support depend on
+// the OS, locale, and installed speech assets; the app does not send an API key.
 import { useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, Animated, Easing, Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
+import { ActivityIndicator, Animated, Easing, Platform, Pressable, Text, View, type LayoutChangeEvent } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import {
   ExpoSpeechRecognitionModule,
@@ -12,6 +12,25 @@ import {
 } from 'expo-speech-recognition';
 import { getSttLanguage } from '@/lib/voice-prefs';
 import { Fonts } from '@/constants/theme';
+
+function describeRecognitionError(code: string, message?: string): string {
+  const detail = message?.trim();
+  const recovery = Platform.OS === 'ios'
+    ? ({
+        'no-speech': 'No speech was detected. Tap the microphone and speak clearly.',
+        'language-not-supported': 'This speech language is not available on this iPhone. Choose another language in voice settings.',
+        'service-not-allowed': 'Apple speech recognition is unavailable right now. Check the selected language and try again.',
+        'not-allowed': 'Allow Microphone and Speech Recognition in iPhone Settings, then try again.',
+        network: 'Speech recognition could not connect. Check your internet connection and try again.',
+        interrupted: 'Voice input was interrupted. Tap the microphone to start again.',
+        'audio-capture': 'The microphone could not start. Check microphone access and try again.',
+        busy: 'Voice input is already in use. Wait a moment and try again.',
+      } as Record<string, string>)[code]
+    : null;
+
+  if (recovery) return detail && !['no-speech', 'interrupted'].includes(code) ? `${recovery}\n${detail}` : recovery;
+  return detail || 'Voice input failed. Please try again.';
+}
 
 /** A single bar of the recording waveform, looping a height pulse on a phase offset. */
 function WaveBar({ delay, color }: { delay: number; color: string }) {
@@ -111,8 +130,10 @@ export function VoiceInputButton({
     onListeningChange?.(false);
     // "no-speech" / "aborted" are just "nothing was said" / "user stopped it" —
     // not real errors worth surfacing.
-    if (event.error !== 'no-speech' && event.error !== 'aborted') {
-      onError?.(event.message || 'Voice input failed. Please try again.');
+    if (event.error === 'aborted') return;
+    if (event.error === 'no-speech' && Platform.OS !== 'ios') return;
+    if (event.error !== 'no-speech' || Platform.OS === 'ios') {
+      onError?.(describeRecognitionError(event.error, event.message));
     }
   });
 
@@ -134,7 +155,9 @@ export function VoiceInputButton({
       const result = await ExpoSpeechRecognitionModule.requestPermissionsAsync();
       if (!result.granted) {
         setStarting(false);
-        onError?.('Microphone/speech permission denied.');
+        onError?.(Platform.OS === 'ios'
+          ? 'Allow Microphone and Speech Recognition in iPhone Settings, then try again.'
+          : 'Microphone/speech permission denied.');
         return;
       }
       // null (system default) omits `lang` entirely so the recognizer falls
@@ -147,9 +170,16 @@ export function VoiceInputButton({
         interimResults: true,
         continuous: false,
       });
-    } catch {
+    } catch (error) {
       setStarting(false);
-      onError?.('Voice input is not available on this device.');
+      if (Platform.OS !== 'ios') {
+        onError?.('Voice input is not available on this device.');
+        return;
+      }
+      const detail = error instanceof Error ? error.message.trim() : '';
+      onError?.(detail
+        ? `Voice input could not start: ${detail}`
+        : 'Voice input could not start. Check microphone and speech-recognition access in Settings, then try again.');
     }
   };
 

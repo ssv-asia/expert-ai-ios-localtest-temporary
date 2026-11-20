@@ -75,6 +75,8 @@ export function SidePanel({
   const translateY = useSharedValue(panelHeight);
   const [tab, setTab] = useState<PanelTab>('github');
   const [documents, setDocuments] = useState<StoredDocument[]>([]);
+  const [documentsError, setDocumentsError] = useState<string | null>(null);
+  const [projectsError, setProjectsError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const mountedRef = useRef(false);
   // PDF gets its own options step (template + branding) instead of exporting
@@ -116,12 +118,17 @@ export function SidePanel({
   // there" when starting a new chat. Which chat/project a document came from
   // is still shown per-row, it's just no longer a hard filter.
   const refresh = useCallback(() => {
+    if (Platform.OS !== 'ios') {
+      listDocuments().then(setDocuments).catch(() => setDocuments([]));
+      listProjects().then(setProjects).catch(() => setProjects([]));
+      return;
+    }
     listDocuments()
-      .then(setDocuments)
-      .catch(() => setDocuments([]));
+      .then((items) => { setDocuments(items); setDocumentsError(null); })
+      .catch(() => setDocumentsError('Could not load saved documents. Your saved data has not been changed.'));
     listProjects()
-      .then(setProjects)
-      .catch(() => setProjects([]));
+      .then((items) => { setProjects(items); setProjectsError(null); })
+      .catch(() => setProjectsError('Could not load saved projects. Your saved data has not been changed.'));
   }, []);
 
   useEffect(() => {
@@ -165,26 +172,51 @@ export function SidePanel({
   const handleCreateDocument = useCallback(async () => {
     const title = newDocTitle.trim() || 'Untitled note';
     if (!newDocBody.trim()) return;
-    await saveDocument({
-      id: makeDocumentId(),
-      title,
-      kind: 'markdown',
-      content: newDocBody,
-      conversationId,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
-    });
-    setNewDocTitle('');
-    setNewDocBody('');
-    setNewDocOpen(false);
-    refresh();
+    if (Platform.OS !== 'ios') {
+      await saveDocument({
+        id: makeDocumentId(), title, kind: 'markdown', content: newDocBody,
+        conversationId, createdAt: Date.now(), updatedAt: Date.now(),
+      });
+      setNewDocTitle('');
+      setNewDocBody('');
+      setNewDocOpen(false);
+      refresh();
+      return;
+    }
+    try {
+      await saveDocument({
+        id: makeDocumentId(),
+        title,
+        kind: 'markdown',
+        content: newDocBody,
+        conversationId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      setNewDocTitle('');
+      setNewDocBody('');
+      setNewDocOpen(false);
+      refresh();
+    } catch {
+      Alert.alert('Document not saved', 'Storage could not save this document. Your text is still here; try again.');
+    }
   }, [newDocTitle, newDocBody, conversationId, refresh]);
 
   const handleCreateProject = useCallback(async () => {
     if (!newProjectName.trim()) return;
-    await createProject(newProjectName);
-    setNewProjectName('');
-    refresh();
+    if (Platform.OS !== 'ios') {
+      await createProject(newProjectName);
+      setNewProjectName('');
+      refresh();
+      return;
+    }
+    try {
+      await createProject(newProjectName);
+      setNewProjectName('');
+      refresh();
+    } catch {
+      Alert.alert('Project not created', 'Storage could not save this project. Try again.');
+    }
   }, [newProjectName, refresh]);
 
   const handleDeleteProject = useCallback(
@@ -195,12 +227,29 @@ export function SidePanel({
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteProject(project.id);
+            if (Platform.OS !== 'ios') {
+              await deleteProject(project.id);
+              // Keep the existing Android read-before-clear behavior.
+              await clearProjectFromAllConversations(project.id);
+              if (selectedProjectId === project.id) setSelectedProjectId(null);
+              refresh();
+              return;
+            }
+            try {
+              await deleteProject(project.id);
+            } catch {
+              Alert.alert('Project not deleted', 'Storage could not update your projects. Try again.');
+              return;
+            }
             // Reads fresh from disk rather than the `conversations` prop —
             // that snapshot only refreshes when this panel opens, so it can
             // be stale relative to an assignment made moments ago from the
             // separate Chat History sheet's own "move to project" picker.
-            await clearProjectFromAllConversations(project.id);
+            try {
+              await clearProjectFromAllConversations(project.id);
+            } catch {
+              Alert.alert('Project partially deleted', 'The project was removed, but some chats could not be ungrouped. Reopen Chat History and try again.');
+            }
             if (selectedProjectId === project.id) setSelectedProjectId(null);
             refresh();
           },
@@ -218,8 +267,17 @@ export function SidePanel({
           text: 'Delete',
           style: 'destructive',
           onPress: async () => {
-            await deleteDocument(doc.id);
-            refresh();
+            if (Platform.OS !== 'ios') {
+              await deleteDocument(doc.id);
+              refresh();
+              return;
+            }
+            try {
+              await deleteDocument(doc.id);
+              refresh();
+            } catch {
+              Alert.alert('Document not deleted', 'Storage could not update your documents. Try again.');
+            }
           },
         },
       ]);
@@ -292,6 +350,7 @@ export function SidePanel({
 
         {tab === 'documents' ? (
           <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
+            {Platform.OS === 'ios' && documentsError ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, fontSize: 13, color: '#c0392b' }}>{documentsError}</Text> : null}
             {newDocOpen ? (
               <View style={{ backgroundColor: colors.background, borderRadius: 12, padding: 12, borderWidth: 1, borderColor: colors.border, gap: 8 }}>
                 <TextInput
@@ -442,6 +501,7 @@ export function SidePanel({
             const projectChats = conversations.filter((c) => c.projectId === selectedProjectId);
             return (
               <ScrollView style={{ flex: 1 }} contentContainerStyle={{ padding: 16, gap: 10 }}>
+                {Platform.OS === 'ios' && projectsError ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, fontSize: 13, color: '#c0392b' }}>{projectsError}</Text> : null}
                 <Pressable onPress={() => setSelectedProjectId(null)} style={{ flexDirection: 'row', alignItems: 'center', gap: 4, marginBottom: 4 }}>
                   <Ionicons name="chevron-back" size={16} color={colors.textSecondary} />
                   <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 13, color: colors.textSecondary }}>All projects</Text>
@@ -524,6 +584,7 @@ export function SidePanel({
             </View>
 
             {projects.length === 0 ? (
+              Platform.OS === 'ios' && projectsError ? <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, fontSize: 13, color: '#c0392b' }}>{projectsError}</Text> :
               <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, marginTop: 24, textAlign: 'center' }}>
                 Name a project to group related chats and documents together — e.g. by topic or client.
               </Text>

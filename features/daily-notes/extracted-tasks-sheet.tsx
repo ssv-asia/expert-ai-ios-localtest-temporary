@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 
 import { Fonts } from '@/constants/theme';
@@ -24,7 +24,7 @@ interface ExtractedTasksSheetProps {
   candidates: string[];
   onClose: () => void;
   /** Fires once with every selected task and the chosen fire time (epoch ms). */
-  onSchedule: (tasks: string[], whenMs: number) => void;
+  onSchedule: (tasks: string[] | { index: number; prompt: string }[], whenMs: number) => Promise<number[] | void> | void;
 }
 
 const WHEN_PRESETS: { label: string; getMs: () => number }[] = [
@@ -81,10 +81,9 @@ export function ExtractedTasksSheet({
     }
   }, [visible, candidates]);
 
-  const chosen = useMemo(
-    () => candidates.filter((_, i) => selected[i]),
-    [candidates, selected],
-  );
+  const chosen = useMemo(() => Platform.OS === 'ios'
+    ? candidates.flatMap((prompt, index) => selected[index] ? [{ index, prompt }] : [])
+    : candidates.filter((_, index) => selected[index]), [candidates, selected]);
 
   const inputBg = colors.surface;
 
@@ -160,7 +159,18 @@ export function ExtractedTasksSheet({
             <Pressable
               onPress={() => {
                 if (chosen.length === 0) return;
-                onSchedule(chosen, WHEN_PRESETS[presetIdx].getMs());
+                const scheduleResult = onSchedule(chosen, WHEN_PRESETS[presetIdx].getMs());
+                if (Platform.OS !== 'ios') return;
+                void Promise.resolve(scheduleResult).then((completed) => {
+                  if (!completed?.length) return;
+                  const completedSet = new Set(completed);
+                  const remaining = candidates.flatMap((candidate, index) => selected[index] && !completedSet.has(index) ? [index] : []);
+                  if (remaining.length === 0) {
+                    onClose();
+                    return;
+                  }
+                  setSelected(Object.fromEntries(remaining.map((index) => [index, true])));
+                });
               }}
               disabled={chosen.length === 0}
               style={({ pressed }) => [

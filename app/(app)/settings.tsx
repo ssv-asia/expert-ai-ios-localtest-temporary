@@ -1,6 +1,5 @@
-﻿import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import {
-  ActivityIndicator,
   Alert,
   Pressable,
   ScrollView,
@@ -33,8 +32,9 @@ import { SpeechSettings } from '@/features/speech/components/speech-settings';
 import { AgentModesSection } from '@/features/settings/components/agent-modes-section';
 import { useChatStore } from '@/features/chat/store';
 import { sdk, unwrapApiData } from '@expertai/client';
-import { checkGatewayHealth, GATEWAY_BASE_URL } from '@/lib/gateway-client';
-import { getSession, getActiveToken } from '@/lib/auth';
+import { checkGatewayHealth, deleteAccount, GATEWAY_BASE_URL } from '@/lib/gateway-client';
+import { getSession, getActiveToken, signOut } from '@/lib/auth';
+import { clearGoogleAccount } from '@/components/google-sign-in-button';
 import { fetchMemory, hasMemorySupport, saveMemory, MEMORY_MAX_CHARS } from '@/lib/memory';
 import { deleteAutomationRecipe, listAutomationRecipes, type AutomationRecipe } from '@/lib/automation-recipes';
 import * as Clipboard from 'expo-clipboard';
@@ -239,7 +239,11 @@ function MemorySection({ isDark, textPrimary, textMuted }: { isDark: boolean; te
 function RecipesSection({ isDark, textPrimary, textMuted }: { isDark: boolean; textPrimary: string; textMuted: string }) {
   const router = useRouter();
   const [recipes, setRecipes] = useState<AutomationRecipe[]>([]);
-  const reload = useCallback(() => { listAutomationRecipes().then(setRecipes).catch(() => {}); }, []);
+  const reload = useCallback(() => {
+    listAutomationRecipes().then(setRecipes).catch((error) => {
+      if (Platform.OS === 'ios') Alert.alert('Workflows unavailable', error instanceof Error ? error.message : 'Saved workflows could not be loaded.');
+    });
+  }, []);
   useEffect(() => { reload(); }, [reload]);
   if (!recipes.length) return null;
   return (
@@ -250,7 +254,15 @@ function RecipesSection({ isDark, textPrimary, textMuted }: { isDark: boolean; t
           <Text numberOfLines={2} style={{ color: textMuted, fontSize: 12, marginTop: 3 }}>{recipe.prompt}</Text>
           <View style={{ flexDirection: 'row', gap: 18, marginTop: 8 }}>
             <Pressable onPress={() => router.push({ pathname: '/simple-chat', params: { recipePrompt: recipe.prompt } })}><Text style={{ color: textPrimary, fontSize: 12 }}>Run</Text></Pressable>
-            <Pressable onPress={() => Alert.alert('Delete recipe?', 'This removes the saved workflow from this device.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => { await deleteAutomationRecipe(recipe.id); reload(); } }])}><Text style={{ color: '#c95757', fontSize: 12 }}>Delete</Text></Pressable>
+            <Pressable onPress={() => Alert.alert('Delete recipe?', 'This removes the saved workflow from this device.', [{ text: 'Cancel', style: 'cancel' }, { text: 'Delete', style: 'destructive', onPress: async () => {
+              try {
+                await deleteAutomationRecipe(recipe.id);
+                reload();
+              } catch (error) {
+                if (Platform.OS !== 'ios') throw error;
+                Alert.alert('Workflow not deleted', error instanceof Error ? error.message : 'The saved workflow could not be deleted. Please try again.');
+              }
+            } }])}><Text style={{ color: '#c95757', fontSize: 12 }}>Delete</Text></Pressable>
           </View>
         </View>
       ))}
@@ -295,7 +307,9 @@ export default function SettingsScreen() {
   const handleDeleteAccount = useCallback(() => {
     Alert.alert(
       'Delete Account',
-      'This will permanently delete your account and all associated data. This action cannot be undone.',
+      Platform.OS === 'ios'
+        ? 'This permanently deletes the Expert AI account on the server. It does not remove daily notes, scheduled tasks, archive files, paired computers, or other data stored on this device. This action cannot be undone.'
+        : 'This will permanently delete your account and all associated data. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -311,28 +325,28 @@ export default function SettingsScreen() {
                 return;
               }
 
-              const response = await fetch(`${GATEWAY_BASE_URL}/account/delete`, {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                  'Authorization': `Bearer ${token}`,
-                },
-              });
-
-              if (response.ok) {
-                Alert.alert('Account Deleted', 'Your account has been successfully deleted.', [
-                  {
-                    text: 'OK',
-                    onPress: () => {
-                      update({ themeMode: 'system', pushNotifications: true, soundEffects: false });
-                    },
-                  },
+              if (Platform.OS === 'ios') {
+                await deleteAccount(token);
+                await clearGoogleAccount();
+                await signOut();
+                Alert.alert('Account Deleted', 'Your Expert AI server account has been deleted. Data stored locally on this device was not removed.', [
+                  { text: 'OK', onPress: () => update({ themeMode: 'system', pushNotifications: true, soundEffects: false }) },
                 ]);
               } else {
-                Alert.alert('Error', 'Failed to delete account. Please try again.');
+                const response = await fetch(`${GATEWAY_BASE_URL}/account/delete`, {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                });
+                if (!response.ok) {
+                  Alert.alert('Error', 'Failed to delete account. Please try again.');
+                  return;
+                }
+                Alert.alert('Account Deleted', 'Your account has been successfully deleted.', [
+                  { text: 'OK', onPress: () => update({ themeMode: 'system', pushNotifications: true, soundEffects: false }) },
+                ]);
               }
             } catch (error) {
-              Alert.alert('Error', 'An error occurred while deleting your account.');
+              Alert.alert('Error', error instanceof Error ? error.message : 'An error occurred while deleting your account.');
             }
           },
         },
@@ -457,8 +471,8 @@ export default function SettingsScreen() {
         {/* Data */}
         <SettingsSection title="Data" icon={Shield} isDark={isDark} textPrimary={textPrimary}>
           <SettingsRow
-            label="Clear Local Data"
-            description="Remove cached data and preferences"
+            label={Platform.OS === 'ios' ? 'Reset Preferences' : 'Clear Local Data'}
+            description={Platform.OS === 'ios' ? 'Restore theme, notification, and sound defaults' : 'Remove cached data and preferences'}
             isDark={isDark}
             onPress={() => {
               update({ themeMode: 'system', pushNotifications: true, soundEffects: false });
@@ -467,7 +481,7 @@ export default function SettingsScreen() {
           />
           <SettingsRow
             label="Delete Account"
-            description="Permanently delete your account and all data"
+            description={Platform.OS === 'ios' ? 'Delete your Expert AI server account; local data remains' : 'Permanently delete your account and all associated data'}
             isDark={isDark}
             onPress={handleDeleteAccount}
             right={<Trash2 size={16} color="#D32F2F" strokeWidth={1.8} />}
@@ -622,70 +636,3 @@ const rowStyles = StyleSheet.create({
     gap: 8,
   },
 });
-
-const updateStyles = StyleSheet.create({
-  row: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-  },
-  statusText: {
-    fontSize: 13,
-    fontFamily: Fonts.sans,
-  },
-  infoRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 16,
-    paddingVertical: 14,
-    gap: 12,
-  },
-  infoCol: {
-    flex: 1,
-  },
-  actionBtn: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 6,
-    paddingHorizontal: 14,
-    paddingVertical: 7,
-    borderRadius: 6,
-  },
-  actionBtnText: {
-    fontSize: 12,
-    fontFamily: Fonts.sansSemiBold,
-  },
-  upToDateBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 5,
-    backgroundColor: 'rgba(52, 199, 89, 0.1)',
-  },
-  upToDateText: {
-    fontSize: 11,
-    fontFamily: Fonts.sansMedium,
-    color: '#34C759',
-  },
-  messageBanner: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
-    marginHorizontal: 16,
-    marginBottom: 12,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 6,
-  },
-  messageText: {
-    fontSize: 12,
-    fontFamily: Fonts.sans,
-    flex: 1,
-  },
-});
-

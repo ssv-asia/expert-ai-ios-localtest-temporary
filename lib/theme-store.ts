@@ -4,7 +4,12 @@ import * as SecureStore from 'expo-secure-store';
 import { getMaterialYouThemeColors } from './material-you';
 
 const STORAGE_KEY = 'simple_chat_theme';
-const AI_DISCLAIMER_KEY = 'ai_disclaimer_seen_v1';
+// Version 2 adds the explicit Gateway/third-party AI data-sharing disclosure.
+// Existing users who acknowledged only the older AI accuracy disclaimer must
+// see and accept the expanded notice once after updating.
+const AI_DISCLAIMER_KEY = Platform.OS === 'ios'
+  ? 'ai_disclaimer_seen_v2'
+  : 'ai_disclaimer_seen_v1';
 
 export type ThemePreset = 'dark' | 'expertAI' | 'materialYou' | 'light' | 'custom';
 
@@ -161,27 +166,40 @@ async function readFromStore(): Promise<ThemeSettings> {
     const raw = await SecureStore.getItemAsync(STORAGE_KEY);
     return raw
       ? JSON.parse(raw)
-      : { preset: 'dark', fontSize: 1 };
+      : { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 };
   } catch {
-    return { preset: 'dark', fontSize: 1 };
+    return { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 };
   }
 }
 
-async function writeToStore(settings: ThemeSettings) {
+async function writeToStore(settings: ThemeSettings): Promise<void> {
+  const json = JSON.stringify(settings);
+  if (Platform.OS === 'web') {
+    localStorage.setItem(STORAGE_KEY, json);
+  } else {
+    await SecureStore.setItemAsync(STORAGE_KEY, json);
+  }
+}
+
+async function commitSettings(settings: ThemeSettings, set: (state: Partial<ThemeStoreState>) => void, get: () => ThemeStoreState): Promise<void> {
+  // Keep the existing best-effort settings behavior on Android and web.
+  if (Platform.OS !== 'ios') {
+    set({ settings });
+    try { await writeToStore(settings); } catch { /* best effort on existing platforms */ }
+    return;
+  }
+  const previous = get().settings;
+  set({ settings });
   try {
-    const json = JSON.stringify(settings);
-    if (Platform.OS === 'web') {
-      localStorage.setItem(STORAGE_KEY, json);
-    } else {
-      await SecureStore.setItemAsync(STORAGE_KEY, json);
-    }
-  } catch {
-    // silently fail
+    await writeToStore(settings);
+  } catch (error) {
+    set({ settings: previous });
+    throw error;
   }
 }
 
 export const useThemeStore = create<ThemeStoreState>((set, get) => ({
-  settings: { preset: 'dark', fontSize: 1 },
+  settings: { preset: Platform.OS === 'ios' ? 'expertAI' : 'dark', fontSize: 1 },
   loaded: false,
   aiDisclaimerSeen: false,
 
@@ -218,15 +236,13 @@ export const useThemeStore = create<ThemeStoreState>((set, get) => ({
 
   setPreset: async (preset) => {
     const settings = { ...get().settings, preset };
-    set({ settings });
-    await writeToStore(settings);
+    await commitSettings(settings, set, get);
   },
 
   setFontSize: async (fontSize) => {
     const clamped = Math.max(0.8, Math.min(1.2, fontSize));
     const settings = { ...get().settings, fontSize: clamped };
-    set({ settings });
-    await writeToStore(settings);
+    await commitSettings(settings, set, get);
   },
 
   setCustomColors: async (colors) => {
@@ -240,8 +256,7 @@ export const useThemeStore = create<ThemeStoreState>((set, get) => ({
       preset: 'custom' as const,
       colors: { ...baseColors, ...colors },
     };
-    set({ settings });
-    await writeToStore(settings);
+    await commitSettings(settings, set, get);
   },
 
   getColors: () => {
@@ -261,8 +276,7 @@ export const useThemeStore = create<ThemeStoreState>((set, get) => ({
   },
 
   reset: async () => {
-    const settings = { preset: 'dark' as const, fontSize: 1 };
-    set({ settings });
-    await writeToStore(settings);
+    const settings = { preset: (Platform.OS === 'ios' ? 'expertAI' : 'dark') as ThemePreset, fontSize: 1 };
+    await commitSettings(settings, set, get);
   },
 }));

@@ -400,6 +400,9 @@ export async function streamChatCompletion(
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
+        // The Gateway injects its MCP schemas server-side. Keep this request
+        // shape identical to the APK so client tools cannot override or narrow
+        // the Gateway's tool catalogue.
         body: JSON.stringify({ model, messages, stream: true }),
       },
       { signal, attemptTimeoutMs: 20000, retries: 2 },
@@ -851,7 +854,10 @@ export async function deleteAccount(token: string): Promise<void> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     },
-    { attemptTimeoutMs: 15000, retries: 2 },
+    // Account deletion is destructive and has no idempotency key. A timeout
+    // can happen after the Gateway has deleted the account, so never replay
+    // this POST automatically against either origin.
+    { attemptTimeoutMs: 15000, retries: Platform.OS === 'ios' ? 0 : 2 },
   );
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {

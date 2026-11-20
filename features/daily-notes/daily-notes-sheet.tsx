@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   KeyboardAvoidingView,
+  Alert,
   Modal,
   Platform,
   Pressable,
@@ -41,7 +42,7 @@ interface DailyNotesSheetProps {
   /** All stored notes (newest first); the one open in the editor is filtered out. */
   archive: DailyNote[];
   /** Debounced-persisted by the parent. */
-  onChangeBody: (id: string, body: string) => void;
+  onChangeBody: (id: string, body: string) => void | Promise<void>;
   onOpenArchived: (id: string) => void;
   onBackToToday: () => void;
   onDeleteArchived: (id: string) => void;
@@ -103,6 +104,9 @@ export function DailyNotesSheet({
   const [query, setQuery] = useState('');
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastNoteId = useRef<string | null>(null);
+  const saveRevisionRef = useRef(0);
+  const [saveError, setSaveError] = useState(false);
+  const [savePending, setSavePending] = useState(false);
 
   // Reset the editor whenever the underlying note changes (open, or switch to an
   // archived day). Flush any pending save for the previous note first.
@@ -128,19 +132,58 @@ export function DailyNotesSheet({
     setText(next);
     if (!note) return;
     const id = note.id;
+    const revision = ++saveRevisionRef.current;
+    if (Platform.OS === 'ios') {
+      setSaveError(false);
+      setSavePending(true);
+    }
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => {
-      onChangeBody(id, next);
       debounceRef.current = null;
+      if (Platform.OS !== 'ios') {
+        void Promise.resolve(onChangeBody(id, next)).catch(() => {});
+        return;
+      }
+      Promise.resolve().then(() => onChangeBody(id, next)).then(
+        () => { if (revision === saveRevisionRef.current) { setSaveError(false); setSavePending(false); } },
+        () => { if (revision === saveRevisionRef.current) { setSaveError(true); setSavePending(false); } },
+      );
     }, 600);
   };
 
-  const flush = () => {
-    if (debounceRef.current && note) {
+  const flush = async (): Promise<boolean> => {
+    if (!note) return true;
+    const revision = ++saveRevisionRef.current;
+    const hadPendingChange = Boolean(debounceRef.current);
+    if (debounceRef.current) {
       clearTimeout(debounceRef.current);
       debounceRef.current = null;
-      onChangeBody(note.id, text);
     }
+    if (Platform.OS !== 'ios') {
+      if (hadPendingChange) void Promise.resolve(onChangeBody(note.id, text)).catch(() => {});
+      return true;
+    }
+    setSavePending(true);
+    try {
+      await onChangeBody(note.id, text);
+      if (revision === saveRevisionRef.current) { setSaveError(false); setSavePending(false); }
+      return true;
+    } catch {
+      if (revision === saveRevisionRef.current) { setSaveError(true); setSavePending(false); }
+      return false;
+    }
+  };
+
+  const runAfterSave = (action: () => void) => {
+    if (Platform.OS !== 'ios') {
+      void flush();
+      action();
+      return;
+    }
+    void flush().then((saved) => {
+      if (saved) action();
+      else Alert.alert('Could not save note', 'Your text is still on screen. Tap “Retry save” before leaving this note.');
+    });
   };
 
   const archived = useMemo(() => {
@@ -162,8 +205,7 @@ export function DailyNotesSheet({
       transparent
       animationType="fade"
       onRequestClose={() => {
-        flush();
-        onClose();
+        runAfterSave(onClose);
       }}
     >
       <KeyboardAvoidingView
@@ -174,8 +216,7 @@ export function DailyNotesSheet({
         <Pressable
           style={styles.overlay}
           onPress={() => {
-            flush();
-            onClose();
+            runAfterSave(onClose);
           }}
         >
           <Pressable onPress={(e) => e.stopPropagation()} style={{ width: '100%' }}>
@@ -199,8 +240,7 @@ export function DailyNotesSheet({
                 </View>
                 <Pressable
                   onPress={() => {
-                    flush();
-                    onSwitchToTasks();
+                    runAfterSave(onSwitchToTasks);
                   }}
                   style={({ pressed }) => [styles.segmentOff, { opacity: pressed ? 0.6 : 1 }]}
                 >
@@ -222,8 +262,7 @@ export function DailyNotesSheet({
                 {!isViewingToday ? (
                   <Pressable
                     onPress={() => {
-                      flush();
-                      onBackToToday();
+                      runAfterSave(onBackToToday);
                     }}
                     style={({ pressed }) => [styles.todayChip, { borderColor: colors.border, opacity: pressed ? 0.6 : 1 }]}
                   >
@@ -234,6 +273,18 @@ export function DailyNotesSheet({
                   </Pressable>
                 ) : null}
               </View>
+              {Platform.OS === 'ios' && note && (savePending || saveError) ? (
+                <Pressable
+                  onPress={saveError ? () => { void flush(); } : undefined}
+                  accessibilityRole={saveError ? 'button' : undefined}
+                  accessibilityLabel={saveError ? 'Note could not be saved. Tap to retry.' : 'Saving note'}
+                  style={{ alignSelf: 'flex-start', marginBottom: 8 }}
+                >
+                  <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: saveError ? '#D92D20' : colors.textTertiary }}>
+                    {saveError ? 'Could not save · Retry save' : 'Saving…'}
+                  </Text>
+                </Pressable>
+              ) : null}
 
               {/* Actions kept ABOVE the editor so they stay reachable when the
                   keyboard is open (edge-to-edge: the modal window is not resized). */}
@@ -243,17 +294,17 @@ export function DailyNotesSheet({
                 keyboardShouldPersistTaps="handled"
                 contentContainerStyle={styles.actionRow}
               >
-                <ActionButton icon="sparkles-outline" label="AI insights" color={colors.text} onPress={() => { flush(); onAiInsights(); }} />
-                <ActionButton icon="checkbox-outline" label="Extract tasks" color={colors.text} onPress={() => { flush(); onExtractTasks(); }} />
-                <ActionButton icon="moon-outline" label="End of day" color={colors.text} onPress={() => { flush(); onEndOfDayReview(); }} />
-                <ActionButton icon="calendar-outline" label="Weekly digest" color={colors.text} onPress={() => { flush(); onWeeklyDigest(); }} />
-                <ActionButton icon="share-outline" label="Share" color={colors.text} onPress={() => { flush(); onShareNote(); }} />
+                <ActionButton icon="sparkles-outline" label="AI insights" color={colors.text} onPress={() => runAfterSave(onAiInsights)} />
+                <ActionButton icon="checkbox-outline" label="Extract tasks" color={colors.text} onPress={() => runAfterSave(onExtractTasks)} />
+                <ActionButton icon="moon-outline" label="End of day" color={colors.text} onPress={() => runAfterSave(onEndOfDayReview)} />
+                <ActionButton icon="calendar-outline" label="Weekly digest" color={colors.text} onPress={() => runAfterSave(onWeeklyDigest)} />
+                <ActionButton icon="share-outline" label="Share" color={colors.text} onPress={() => runAfterSave(onShareNote)} />
               </ScrollView>
 
               <TextInput
                 value={text}
                 onChangeText={handleChange}
-                onBlur={flush}
+                onBlur={() => { void flush(); }}
                 multiline
                 placeholder="Jot down your day…"
                 placeholderTextColor={colors.textTertiary}
@@ -294,10 +345,7 @@ export function DailyNotesSheet({
                   archived.map((n) => (
                     <View key={n.id} style={[styles.archiveRow, { borderColor: colors.border }]}>
                       <Pressable
-                        onPress={() => {
-                          flush();
-                          onOpenArchived(n.id);
-                        }}
+                        onPress={() => runAfterSave(() => onOpenArchived(n.id))}
                         style={{ flex: 1 }}
                       >
                         <Text style={[styles.archiveRowTitle, { color: colors.text }]} numberOfLines={1}>

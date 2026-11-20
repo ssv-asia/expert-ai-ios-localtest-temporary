@@ -5,6 +5,7 @@
 // gateway exchange (POST /auth/google/verify — server-verified, no redirect).
 import { useEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, Pressable, StyleSheet, View } from 'react-native';
+import Constants from 'expo-constants';
 import {
   GoogleSignin,
   GoogleSigninButton,
@@ -20,6 +21,13 @@ import { signInWithGoogleIdToken, type Session } from '@/lib/auth';
 // to succeed. Do NOT swap this for an "Android"-type client ID; see the
 // gateway's /auth/google/verify contract.
 const WEB_CLIENT_ID = '1093163336745-590eg1hv03k7rnjot7cqqvct7vv08ceq.apps.googleusercontent.com';
+const IOS_CLIENT_ID = Constants.expoConfig?.extra?.googleIosClientId
+  ?? process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID
+  ?? '';
+
+export function isGoogleSignInAvailable(): boolean {
+  return Platform.OS !== 'ios' || Boolean(IOS_CLIENT_ID.trim());
+}
 
 declare global {
   interface Window {
@@ -97,7 +105,11 @@ function WebGoogleSignInButton({
 let configured = false;
 function ensureConfigured() {
   if (configured) return;
-  GoogleSignin.configure({ webClientId: WEB_CLIENT_ID, offlineAccess: false });
+  GoogleSignin.configure({
+    webClientId: WEB_CLIENT_ID,
+    ...(Platform.OS === 'ios' && IOS_CLIENT_ID ? { iosClientId: IOS_CLIENT_ID } : {}),
+    offlineAccess: false,
+  });
   configured = true;
 }
 
@@ -129,6 +141,10 @@ export function GoogleSignInButton({
 
   const handlePress = async () => {
     if (loading || disabled) return;
+    if (Platform.OS === 'ios' && !IOS_CLIENT_ID) {
+      onError('Google sign-in is not configured for iOS yet. Please use email sign-in.');
+      return;
+    }
     ensureConfigured();
     setLoading(true);
     try {
@@ -157,7 +173,9 @@ export function GoogleSignInButton({
           return;
         }
         if (err.code === '12500') {
-          onError('Google could not complete sign-in (error 12500). Confirm the Android OAuth client uses package com.ssvasia.expertai and the Play App Signing SHA-1 for this app.');
+          onError(Platform.OS === 'android'
+            ? 'Google could not complete sign-in (error 12500). Confirm the Android OAuth client package and Play App Signing certificate are configured.'
+            : 'Google could not complete sign-in. Check the iOS OAuth client, URL scheme, and app registration.');
           return;
         }
         // DEVELOPER_ERROR (10) almost always means the app's signing certificate
@@ -166,7 +184,9 @@ export function GoogleSignInButton({
         // project as WEB_CLIENT_ID above — see keystore.properties + Play
         // Console → Setup → App integrity for the two certificates (upload key
         // and, separately, Play App Signing) that both need to be registered.
-        onError(`Google sign-in failed (code ${err.code}). Check the Android OAuth client package name and Play signing certificate.`);
+        onError(Platform.OS === 'android'
+          ? `Google sign-in failed (code ${err.code}). Check the Android OAuth client package name and Play signing certificate.`
+          : `Google sign-in failed (code ${err.code}). Check the iOS OAuth client and URL scheme.`);
         return;
       }
       onError(err instanceof Error ? err.message : 'Google sign-in failed. Please try again.');

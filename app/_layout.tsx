@@ -9,7 +9,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { router, Stack } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import * as SplashScreen from "expo-splash-screen";
-import * as Notifications from "expo-notifications";
+import { NotificationsService } from "@/lib/notifications-service";
 import { useFonts } from "expo-font";
 import {
   DMSans_400Regular,
@@ -142,6 +142,14 @@ function RootLayout() {
     }
   }, [fontsLoaded]);
 
+  // Install the foreground notification handler as soon as the root app
+  // mounts. Initializing this from the chat screen misses notifications that
+  // arrive before that route mounts (including a cold-start notification tap).
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    NotificationsService.init().catch(() => {});
+  }, []);
+
   useEffect(() => {
     if (Platform.OS !== 'web' || typeof document === 'undefined') return;
     const id = 'expert-ai-web-icon-fonts';
@@ -178,21 +186,44 @@ function RootLayout() {
   // Tapping a "scheduled task is due" notification opens Chat and runs that task.
   // Covers both a warm tap (listener) and a cold start (last response).
   useEffect(() => {
+    let lastResponseKey = '';
     const route = (data: unknown) => {
-      const d = data as { kind?: string; type?: string; taskId?: string; conversationId?: string; jobId?: string } | undefined;
+      const d = data as { kind?: string; type?: string; taskId?: string; scheduledFor?: string; conversationId?: string; jobId?: string } | undefined;
+      if (!d) return;
+      if (Platform.OS === 'android') {
+        if (d.kind === 'scheduled_task' && d.taskId) {
+          router.navigate({ pathname: '/simple-chat', params: { runTaskId: d.taskId } });
+        } else if (d.type === 'response_ready' && d.conversationId) {
+          router.navigate({ pathname: '/simple-chat', params: { openConversationId: d.conversationId, openJobId: d.jobId || undefined } });
+        }
+        return;
+      }
+      const responseKey = [d.kind, d.type, d.taskId, d.scheduledFor, d.conversationId, d.jobId].join(':');
+      if (responseKey === lastResponseKey) return;
+      lastResponseKey = responseKey;
       if (d?.kind === "scheduled_task" && d.taskId) {
-        router.navigate({ pathname: "/simple-chat", params: { runTaskId: d.taskId } });
+        router.navigate({ pathname: "/simple-chat", params: { runTaskId: d.taskId, runTaskAt: d.scheduledFor } });
       } else if (d?.type === "response_ready" && d.conversationId) {
         router.navigate({ pathname: "/simple-chat", params: { openConversationId: d.conversationId, openJobId: d.jobId || undefined } });
+      } else if (d?.type === "response_failed" && d.conversationId) {
+        router.navigate({ pathname: "/simple-chat", params: { openConversationId: d.conversationId, openJobId: d.jobId || undefined } });
+      } else if ((d?.type === "task_completed" || d?.type === "task_failed") && d.conversationId) {
+        router.navigate({ pathname: "/simple-chat", params: { openConversationId: d.conversationId } });
       }
     };
-    Notifications.getLastNotificationResponseAsync()
-      .then((resp) => route(resp?.notification.request.content.data))
+    NotificationsService.getLastResponseData()
+      .then((data) => {
+        if (data) {
+          route(data);
+          if (Platform.OS === 'ios') NotificationsService.clearLastResponse();
+        }
+      })
       .catch(() => {});
-    const sub = Notifications.addNotificationResponseReceivedListener((resp) =>
-      route(resp.notification.request.content.data),
-    );
-    return () => sub.remove();
+    const sub = NotificationsService.addResponseListener((data) => {
+      route(data);
+      if (Platform.OS === 'ios') NotificationsService.clearLastResponse();
+    });
+    return () => sub?.remove();
   }, []);
 
   if (!fontsLoaded) {

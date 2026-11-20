@@ -30,36 +30,83 @@ async function writeKey(value: string): Promise<void> {
     localStorage.setItem(STORAGE_KEY, value);
     return;
   }
+  if (Platform.OS === 'ios') {
+    const tempPath = `${projectsPath}.tmp`;
+    const backupPath = `${projectsPath}.bak`;
+    await FileSystem.writeAsStringAsync(tempPath, value);
+    const current = await FileSystem.getInfoAsync(projectsPath);
+    if (current.exists) {
+      try {
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(projectsPath));
+        if (Array.isArray(parsed)) await FileSystem.copyAsync({ from: projectsPath, to: backupPath });
+      } catch { /* keep the previous known-good backup if the primary is corrupt */ }
+      await FileSystem.deleteAsync(projectsPath, { idempotent: true });
+    }
+    await FileSystem.moveAsync({ from: tempPath, to: projectsPath });
+    return;
+  }
   await FileSystem.writeAsStringAsync(projectsPath, value);
 }
 
 async function readAll(): Promise<Project[]> {
   if (cache) return cache;
-  try {
-    const raw = await readKey();
-    const parsed = raw ? JSON.parse(raw) : [];
-    cache = Array.isArray(parsed) ? parsed : [];
-  } catch {
+  if (Platform.OS === 'ios') {
+    let foundSnapshot = false;
+    for (const path of [projectsPath, `${projectsPath}.bak`, `${projectsPath}.tmp`]) {
+      try {
+        const info = await FileSystem.getInfoAsync(path);
+        if (!info.exists) continue;
+        foundSnapshot = true;
+        const parsed = JSON.parse(await FileSystem.readAsStringAsync(path));
+        if (!Array.isArray(parsed)) continue;
+        cache = parsed;
+        if (path !== projectsPath) {
+          try {
+            await FileSystem.writeAsStringAsync(`${projectsPath}.tmp`, JSON.stringify(parsed));
+            await FileSystem.deleteAsync(projectsPath, { idempotent: true });
+            await FileSystem.moveAsync({ from: `${projectsPath}.tmp`, to: projectsPath });
+          } catch { /* recovered in memory; next successful mutation repairs disk */ }
+        }
+        return cache;
+      } catch {
+        // Try the backup or completed temporary snapshot.
+      }
+    }
+    if (foundSnapshot) throw new Error('No valid saved projects snapshot found.');
     cache = [];
+  } else {
+    try {
+      const raw = await readKey();
+      const parsed = raw ? JSON.parse(raw) : [];
+      if (!Array.isArray(parsed)) throw new Error('Saved projects have an invalid format.');
+      cache = parsed;
+    } catch { cache = []; }
   }
   return cache;
 }
 
-async function writeAll(projects: Project[]): Promise<void> {
+async function writeAll(update: Project[] | ((current: Project[]) => Project[])): Promise<void> {
   const operation = writeChain.then(async () => {
-    cache = projects;
-    try {
-      await writeKey(JSON.stringify(projects));
-    } catch {
-      /* best-effort — losing a project write is recoverable, never crash the chat over it */
+    const projects = typeof update === 'function' ? update([...await readAll()]) : update;
+    if (Platform.OS === 'ios') {
+      try {
+        await writeKey(JSON.stringify(projects));
+      } catch (error) {
+        try { await FileSystem.deleteAsync(`${projectsPath}.tmp`, { idempotent: true }); } catch { /* retain original write error */ }
+        throw error;
+      }
+      cache = projects;
+      return;
     }
+    cache = projects;
+    try { await writeKey(JSON.stringify(projects)); } catch { /* preserve existing best-effort behavior */ }
   });
   writeChain = operation.then(() => undefined).catch(() => {});
   await operation;
 }
 
 export async function listProjects(): Promise<Project[]> {
-  const all = await readAll();
+  const all = [...await readAll()];
   return [...all].sort((a, b) => b.updatedAt - a.updatedAt);
 }
 
@@ -68,23 +115,21 @@ export function makeProjectId(): string {
 }
 
 export async function createProject(name: string): Promise<Project> {
-  const all = await readAll();
   const now = Date.now();
   const project: Project = { id: makeProjectId(), name: name.trim() || 'Untitled project', createdAt: now, updatedAt: now };
-  all.unshift(project);
-  await writeAll(all);
+  await writeAll((current) => [project, ...current]);
   return project;
 }
 
 export async function renameProject(id: string, name: string): Promise<void> {
-  const all = await readAll();
-  const idx = all.findIndex((p) => p.id === id);
-  if (idx < 0) return;
-  all[idx] = { ...all[idx], name: name.trim() || all[idx].name, updatedAt: Date.now() };
-  await writeAll(all);
+  await writeAll((current) => {
+    const idx = current.findIndex((project) => project.id === id);
+    if (idx < 0) return current;
+    current[idx] = { ...current[idx], name: name.trim() || current[idx].name, updatedAt: Date.now() };
+    return current;
+  });
 }
 
 export async function deleteProject(id: string): Promise<void> {
-  const all = await readAll();
-  await writeAll(all.filter((p) => p.id !== id));
+  await writeAll((current) => current.filter((project) => project.id !== id));
 }

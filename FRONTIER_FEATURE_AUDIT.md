@@ -97,12 +97,16 @@ including a one-tap “Verify again” action on the latest assistant response.
 Automatic source-date extraction remains planned until the MCP response contract
 persists structured citation metadata.
 
-Item 27 now has explicit document context controls: `/doc` forces the open
-document into the request and `/nodoc` excludes it, overriding the default
-intent heuristic. Recent-chat and memory scopes remain separately planned.
-Recent-chat scope is now also explicit: `/fresh` sends only the current turn,
-while `/recent N` limits the request to the most recent N exchanges (bounded to
-20). The composer labels the active scope before send.
+Item 27 has platform-specific behavior in the current iOS migration checkout.
+Android retains local `/fresh` and `/recent N` history slicing. iOS passes
+Gateway-owned commands through without local slicing or command-mode rewriting.
+The Gateway supplies tool schemas and emits app-compatible tool calls; iOS
+passes those calls through the generic `/mcp` executor without hardcoding
+Gateway tool names. `/doc` and `/nodoc` only include or exclude the open file
+from request context while forwarding the original user message. The existing
+document editor applies a targeted `patchjson` response to the local draft;
+verify the full edit, review, and Git commit flow on device. Per-request notes
+and memory scopes remain separately planned.
 
 Item 28 now has a user-facing memory review, edit, save, and destructive-clear
 surface in Settings. Memory remains bounded by the existing 4,000-character

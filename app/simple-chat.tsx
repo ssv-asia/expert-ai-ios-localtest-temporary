@@ -18,13 +18,15 @@ import {
   TextInput,
   ToastAndroid,
   View,
+  type KeyboardEvent,
+  useWindowDimensions,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Linking from 'expo-linking';
-import * as WebBrowser from 'expo-web-browser';
 import { useMarkdown } from 'react-native-marked';
 
 import { Colors, Fonts } from '@/constants/theme';
@@ -34,7 +36,7 @@ import { NotificationsService } from '@/lib/notifications-service';
 import { AECKnowledgeService } from '@/lib/aec-knowledge-service';
 import { executeMcpToolOnGateway, getMcpToolPermission, isMcpToolApprovalRequired } from '@/lib/mcp-tool-executor';
 import { SimpleChatSettings } from '@/components/simple-chat-settings';
-import { GoogleSignInButton, clearGoogleAccount } from '@/components/google-sign-in-button';
+import { GoogleSignInButton, clearGoogleAccount, isGoogleSignInAvailable } from '@/components/google-sign-in-button';
 import { VoiceInputButton, VoiceRecordingIndicator } from '@/components/voice-input-button';
 import { checkForFlexibleUpdate, installDownloadedUpdate } from '@/lib/in-app-update';
 import NetInfo from '@react-native-community/netinfo';
@@ -43,9 +45,9 @@ import { classifyMemoryTrigger, fetchMemory, hasMemorySupport, mergeMemoryFact, 
 import { buildHistoryForSend, clearCompactionState } from '@/lib/compaction';
 import { speakText, stopSpeaking } from '@/lib/tts';
 import { cancelChatJob, ChatJobRequestError, createChatJob, createChatJobHandoff, getChatJob, pauseChatJob, resumeChatJob, retryChatJob } from '@/lib/chat-jobs';
-import { forgetChatJob, forgetChatJobIntent, readChatJobHistory, reconcilePendingChatJobs, rememberChatJob, rememberChatJobIntent } from '@/lib/chat-job-store';
-import type { ChatContentPart } from '@/lib/gateway-client';
+import { forgetChatJob, forgetChatJobIntent, readChatJobHistory, reconcilePendingChatJobs, recordChatJobHistory, rememberChatJob, rememberChatJobIntent } from '@/lib/chat-job-store';
 import { buildImageContentParts, buildTextOnlyMessage, type PickedImage } from '@/lib/image-upload';
+import { analyzeImageOnDevice, describeAnalysis } from '@/lib/image-analysis';
 import { ImageAttachButton } from '@/components/image-attach-button';
 import { SidePanel } from '@/components/side-panel';
 import { WebPlanSelector } from '@/components/web-plan-selector';
@@ -56,7 +58,7 @@ import { MobilePlanOverview } from '@/components/mobile-plan-overview';
 import { acknowledgePlayPurchase, prefetchPlayProducts, queryPlayPurchases } from '@/lib/play-billing';
 import { TIER_PRODUCT_IDS } from '@/lib/plan-catalog';
 import { makeDocumentId, saveDocument } from '@/lib/documents-store';
-import { consumeGoogleRedirectSession, getActiveTier, getActiveToken, getSession, requestSsvAsiaCode, restoreSession, signOut, startFreeTrial, verifySsvAsiaCode, type EmailCodeChallenge, type Session } from '@/lib/auth';
+import { consumeGoogleRedirectSession, getActiveTier, getActiveToken, requestSsvAsiaCode, restoreSession, signOut, startFreeTrial, verifySsvAsiaCode, type EmailCodeChallenge, type Session } from '@/lib/auth';
 import {
   fetchAudit,
   fetchKpis,
@@ -99,7 +101,6 @@ import {
   GatewayError,
   isAbortError,
   isModelUnlocked,
-  MODELS,
   reportMessage,
   flushResponseFeedback,
   sendResponseFeedback,
@@ -107,6 +108,7 @@ import {
   streamChatCompletion,
   type AccountInfo,
   type BalanceInfo,
+  type ChatContentPart,
   type ChatMessage,
 } from '@/lib/gateway-client';
 
@@ -229,9 +231,8 @@ function buildSystemContextMessage(opts?: {
     // fast and can outright fail on a long enough file. The full document
     // still lives in the editor and still gets committed as-is; this only
     // limits what's sent to the model for a single turn's context.
-    const DOC_CONTEXT_CAP = 12000;
-    const truncated = opts.document.content.length > DOC_CONTEXT_CAP;
-    const docForModel = truncated ? `${opts.document.content.slice(0, DOC_CONTEXT_CAP)}\n\n[...document truncated for length — ${opts.document.content.length} characters total...]` : opts.document.content;
+    const truncated = opts.document.content.length > DOCUMENT_CONTEXT_CAP;
+    const docForModel = truncated ? `${opts.document.content.slice(0, DOCUMENT_CONTEXT_CAP)}\n\n[...document truncated for length — ${opts.document.content.length} characters total...]` : opts.document.content;
     content += `\n\nThe user has this document open in the editor above the chat: "${opts.document.path}". Its ${truncated ? 'content (truncated below — see note)' : 'current content'} is:\n\n---\n${docForModel}\n---\n\nIf the user is just asking a question about it, answer normally in plain prose — do not repeat the document back. If the user asks you to change, save, write, store, or commit content to it, act like a careful document agent: make the smallest possible targeted edit and preserve all unrelated text. If the user says to save, write, or store a previous response verbatim, use that previous assistant response as the source and apply it to this file; do not merely print a ready-to-copy version. If the file already contains that exact content, report that no change is needed. Reply with a short summary followed by a fenced \`\`\`patchjson block containing JSON with an \"operations\" array. Each operation must be one of: {\"type\":\"replace\",\"find\":\"exact unique old text\",\"replace\":\"new text\"}, {\"type\":\"delete\",\"find\":\"exact unique text\"}, {\"type\":\"insert_before\" or \"insert_after\",\"find\":\"exact unique anchor\",\"content\":\"text\"}, or {\"type\":\"append\",\"content\":\"text\"}. Use exact text copied from the document, never broad guesses, and keep each operation local. Use a full-document replacement only when the user explicitly asks to replace the entire file and the complete file is present in context. If the requested change cannot be safely anchored, explain that instead of rewriting the whole document. Do not return a full replacement document for a normal edit.`;
   }
   return { role: 'system', content };
@@ -244,6 +245,7 @@ function buildSystemContextMessage(opts?: {
 // broad/generous (false positives are harmless — the doc just rides along
 // unused; false negatives would break a follow-up edit request).
 const DOCUMENT_INTENT_RE = /\b(document|file|note|page|vault|repo|this text|it|that)\b.{0,60}\b(edit|rewrite|revise|fix|shorten|lengthen|expand|summar|change|update|add|remove|delete|correct|proofread|translate|format|clean ?up|tighten|polish|improve|rephrase|reword|save|write|store|put|commit)\b|\b(edit|rewrite|revise|fix|shorten|summar|proofread|reword|polish|save|write|store|put|commit)\b.{0,60}\b(document|file|note|this|it|that)\b|\b(save|write|store|put)\b.{0,30}\b(response|answer|reply|verbatim)\b|\b(what does (it|this|the document) say|read (it|this) back|show me the (document|file|note))\b/i;
+const DOCUMENT_CONTEXT_CAP = 12000;
 
 function shouldIncludeDocumentContext(messageText: string): boolean {
   return DOCUMENT_INTENT_RE.test(messageText);
@@ -267,7 +269,8 @@ function shouldEscalateToDurable(history: ChatMessage[]): boolean {
   // server-side durable job cannot attempt to execute a client-local tool.
   if (/daily note|journal|schedule.*(meeting|appointment|call)|calendar.*(meeting|appointment)/i.test(latest)) return false;
   if (userTurns.length < 4) {
-    if (latest.length <= 240 && !latest.startsWith('/task') && !latest.startsWith('/research')) return false;
+    const androidGatewayCommand = Platform.OS === 'android' && /^\/(?:task|research)\b/i.test(latest);
+    if (latest.length <= 240 && !androidGatewayCommand) return false;
   }
   return true;
 }
@@ -286,11 +289,13 @@ function currentStyleOpts(messageText: string = '') {
     concise: s.conciseAnswers,
     cite: s.citeSources,
     english: s.replyInEnglish,
-    researchBrief: /^\/research\b/i.test(messageText.trim()),
-    verificationMode: /^\/verify\b/i.test(messageText.trim()),
-    agentTask: /^\/task\b/i.test(messageText.trim()),
-    outputFormat: (messageText.trim().match(/^\/(checklist|memo|table|study|meeting|executive)\b/i)?.[1].toLowerCase() as 'checklist' | 'memo' | 'table' | 'study' | 'meeting' | 'executive' | undefined),
-    critiqueMode: /^\/critique\b/i.test(messageText.trim()),
+    ...(Platform.OS === 'android' ? {
+      researchBrief: /^\/research\b/i.test(normalized),
+      verificationMode: /^\/verify\b/i.test(normalized),
+      agentTask: /^\/task\b/i.test(normalized),
+      outputFormat: normalized.match(/^\/(checklist|memo|table|study|meeting|executive)\b/i)?.[1].toLowerCase() as 'checklist' | 'memo' | 'table' | 'study' | 'meeting' | 'executive' | undefined,
+      critiqueMode: /^\/critique\b/i.test(normalized),
+    } : {}),
     document: includeDoc ? { path: doc.path, content: doc.content } : undefined,
   };
 }
@@ -303,25 +308,38 @@ function currentStyleOpts(messageText: string = '') {
  *  the chat bubble a second time when it's already shown, editable, in the
  *  document card above. Returns null when there's nothing to do, so the
  *  caller can leave the message text untouched (the common case). */
-function maybeApplyDocumentEdit(replyText: string, targetDoc: { archiveId: string; path: string } | null): string | null {
-  if (!targetDoc) return null;
+function maybeApplyDocumentEdit(
+  replyText: string,
+  targetDoc: { archiveId: string; path: string } | null,
+  userRequest = '',
+): string | null {
+  const requestedEdit = DOCUMENT_INTENT_RE.test(userRequest);
+  if (!targetDoc) {
+    return null;
+  }
   const doc = useDocumentChatStore.getState().activeDocument;
   // Guard against the document being closed or swapped for a different file
   // while this reply was still streaming (a multi-second round trip) — apply
   // the edit only if it's still the same file the user was looking at when
   // they sent the message, never whatever happens to be open now.
-  if (!doc || doc.archiveId !== targetDoc.archiveId || doc.path !== targetDoc.path) return null;
+  if (!doc || doc.archiveId !== targetDoc.archiveId || doc.path !== targetDoc.path) {
+    return requestedEdit
+      ? `${replyText.trim()}\n\n⚠️ The open file changed while I was preparing that edit, so I left the current file untouched. Reopen the intended file and try again.`
+      : replyText;
+  }
   const plan = parseDocumentEditPlan(replyText);
   if (plan) {
     const applied = applyDocumentEditPlan(doc.content, plan);
-    if (!applied) return replyText.replace(/```(?:patchjson|document-patch)\s*\r?\n[\s\S]*?\r?\n```/i, '⚠️ I could not apply that targeted edit safely because its text anchor was missing or ambiguous. The document was not changed.').trim();
+    if (!applied) return replyText.replace(/```(?:patchjson|document-patch)\s*\r?\n[\s\S]*?\r?\n```/i, '⚠️ I could not apply that edit safely: an anchor was missing, ambiguous, or overlapped another edit. The document was not changed. Please retry with smaller edits using distinct exact text.').trim();
     useDocumentChatStore.getState().updateContent(applied.content);
     return patchBlockForReply(replyText, plan.summary || `Applied ${applied.applied} targeted edit${applied.applied === 1 ? '' : 's'}`);
   }
   // Backward-compatible fallback for older sessions/models that still return
   // the previous full-document contract. New turns are explicitly patch-only.
   const match = replyText.match(/```document\r?\n([\s\S]*?)\r?\n```\s*$/m);
-  if (!match) return null;
+  if (!match) return requestedEdit
+    ? `${replyText.trim()}\n\n⚠️ I didn’t change the open file because the edit plan was missing or invalid. Please try again with a smaller, specific change.`
+    : null;
   useDocumentChatStore.getState().updateContent(match[1]);
   return replyText.replace(match[0], '📄 Document updated above — review it, then tap Commit to save it to GitHub.').trim();
 }
@@ -399,6 +417,13 @@ function displayModelName(model?: string): string {
   return model!;
 }
 
+class ChatJobIntentPersistenceError extends Error {
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : 'Could not save the task recovery record on this device.');
+    this.name = 'ChatJobIntentPersistenceError';
+  }
+}
+
 // A tool is an optional enrichment step, never a reason to deadlock the
 // assistant turn. The gateway client has its own request retry budget; this
 // outer deadline also covers a response body that stops resolving entirely.
@@ -408,35 +433,58 @@ async function executeMcpToolWithDeadline(
   token: string,
   deadlineMs = 45_000,
   approved = false,
+  signal?: AbortSignal,
 ): Promise<any> {
+  if (signal?.aborted) return { error: true, code: 'cancelled', message: 'The request was stopped.' };
   const controller = new AbortController();
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let onAbort: (() => void) | undefined;
+  const abortPromise = signal ? new Promise((resolve) => {
+    onAbort = () => {
+      controller.abort();
+      resolve({ error: true, code: 'cancelled', message: 'The request was stopped.' });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  }) : null;
   try {
     return await Promise.race([
       executeMcpToolOnGateway(name, args, token, controller.signal, approved),
       new Promise((resolve) => {
-        timer = setTimeout(() => {
+        const abortTimer = setTimeout(() => {
           controller.abort();
           resolve({ error: true, message: `Tool ${name} timed out; continue without its result.` });
         }, deadlineMs);
+        timer = abortTimer;
       }),
+      ...(abortPromise ? [abortPromise] : []),
     ]);
   } finally {
     if (timer) clearTimeout(timer);
+    if (onAbort) signal?.removeEventListener('abort', onAbort);
   }
 }
 
-function askMcpToolApproval(name: string): Promise<boolean> {
+function askMcpToolApproval(name: string, signal?: AbortSignal): Promise<boolean> {
   const scope = getMcpToolPermission(name);
   return new Promise((resolve) => {
+    if (signal?.aborted) { resolve(false); return; }
+    let settled = false;
+    const finish = (approved: boolean) => {
+      if (settled) return;
+      settled = true;
+      signal?.removeEventListener('abort', onAbort);
+      resolve(approved);
+    };
+    const onAbort = () => finish(false);
+    signal?.addEventListener('abort', onAbort, { once: true });
     Alert.alert(
       'Approval required',
       `${name} requests ${scope} access. Expert AI will only run it once for this request.`,
       [
-        { text: 'Cancel', style: 'cancel', onPress: () => resolve(false) },
-        { text: 'Allow once', onPress: () => resolve(true) },
+        { text: 'Cancel', style: 'cancel', onPress: () => finish(false) },
+        { text: 'Allow once', onPress: () => finish(true) },
       ],
-      { cancelable: false },
+      { cancelable: true, onDismiss: () => finish(false) },
     );
   });
 }
@@ -1040,17 +1088,18 @@ export default function SimpleChatScreen() {
   // which never changes) so the screen actually re-renders when the theme preset
   // changes in Settings — this was the bug: only the settings sheet updated
   // because it read `settings` directly, while this screen never did.
-  const settings = useThemeStore((s) => s.settings);
+  useThemeStore((s) => s.settings);
   const getColors = useThemeStore((s) => s.getColors);
   const themeColors = getColors();
 
   // Use theme colors if available, fallback to system Colors
-  const colors: any = themeColors && Object.keys(themeColors).length > 0
+  const colors: any = useMemo(() => themeColors && Object.keys(themeColors).length > 0
     ? { ...Colors[colorScheme], ...themeColors }  // Merge theme over system colors
-    : Colors[colorScheme];
+    : Colors[colorScheme], [colorScheme, themeColors]);
   // Follow the selected app theme rather than the phone's system setting.
   const isDark = !isLightThemeBackground(colors.background);
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
   const router = useRouter();
 
   // Android share-sheet target: text or a link shared from any other app
@@ -1064,23 +1113,27 @@ export default function SimpleChatScreen() {
     router.push('/(app)/servers');
   }, [router]);
 
-  // Restore the validated v43 strategy: Android does not resize or pan the
-  // window; one spring-driven JS offset moves the complete chat layout,
-  // including the empty-state heading and action buttons.
+  // Keep Android's measured lift and follow iOS keyboard frame changes. Using
+  // the full docked iOS overlap keeps the composer above QuickType; a floating
+  // iPad keyboard does not lift the entire chat layout.
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const keyboardPadding = useRef(new Animated.Value(0)).current;
+  const [iosKeyboardPadding, setIosKeyboardPadding] = useState(0);
   useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
-    const showSub = Keyboard.addListener(showEvent, (event) => {
-      const height = Platform.OS === 'ios'
-        ? event.endCoordinates.height - insets.bottom
-        : event.endCoordinates.height + insets.bottom;
-      setIsKeyboardVisible(true);
-      // Root padding is a layout property, so the native driver cannot be
-      // used. A spring makes that reflow overshoot and visibly wobble on
-      // Samsung/foldable keyboards. Cancel the previous transition and use a
-      // short one-way easing instead.
+    const updateKeyboardFrame = (event: KeyboardEvent) => {
+      if (Platform.OS === 'ios') {
+        const { height, screenY } = event.endCoordinates;
+        // The screen height is larger than the active window in iPad Split
+        // View/Stage Manager. Compare against the current window so a docked
+        // keyboard there is recognized while floating keyboards stay put.
+        setIsKeyboardVisible(height > 0);
+        const reachesBottom = screenY + height >= windowHeight - 1;
+        Keyboard.scheduleLayoutAnimation(event);
+        setIosKeyboardPadding(reachesBottom ? Math.max(0, windowHeight - screenY) : 0);
+        return;
+      }
+      const height = event.endCoordinates.height + insets.bottom;
+      setIsKeyboardVisible(height > 0);
       keyboardPadding.stopAnimation();
       Animated.timing(keyboardPadding, {
         toValue: Math.max(0, height),
@@ -1089,8 +1142,10 @@ export default function SimpleChatScreen() {
         isInteraction: false,
         useNativeDriver: false,
       }).start();
-    });
-    const hideSub = Keyboard.addListener(hideEvent, () => {
+    };
+    const showSub = Platform.OS === 'ios' ? null : Keyboard.addListener('keyboardDidShow', updateKeyboardFrame);
+    const frameSub = Platform.OS === 'ios' ? Keyboard.addListener('keyboardWillChangeFrame', updateKeyboardFrame) : null;
+    const hideSub = Platform.OS !== 'ios' ? Keyboard.addListener('keyboardDidHide', () => {
       setIsKeyboardVisible(false);
       keyboardPadding.stopAnimation();
       Animated.timing(keyboardPadding, {
@@ -1100,9 +1155,9 @@ export default function SimpleChatScreen() {
         isInteraction: false,
         useNativeDriver: false,
       }).start();
-    });
-    return () => { showSub.remove(); hideSub.remove(); };
-  }, [keyboardPadding, insets.bottom]);
+    }) : null;
+    return () => { showSub?.remove(); frameSub?.remove(); hideSub?.remove(); };
+  }, [keyboardPadding, insets.bottom, windowHeight]);
 
   const [messages, setMessages] = useState<DisplayMessage[]>([]);
   const messagesRef = useRef<DisplayMessage[]>(messages);
@@ -1134,6 +1189,7 @@ export default function SimpleChatScreen() {
     controller: AbortController;
     conversationId: string;
     assistantId: string;
+    generation: number;
     pendingText: string;
     raf: number | null;
     lastPersistAt: number;
@@ -1141,6 +1197,23 @@ export default function SimpleChatScreen() {
     completed: boolean;
   };
   const streamRuntimeRef = useRef<Map<string, StreamRuntime>>(new Map());
+  const turnGenerationRef = useRef<Map<string, number>>(new Map());
+  // Turns are registered as soon as the composer accepts them, before history
+  // compaction, token lookup, or job creation can yield. This lets Stop and New
+  // Chat invalidate setup work that has not created a stream/job handle yet.
+  const pendingTurnsRef = useRef<Map<string, { conversationId: string; generation: number }>>(new Map());
+  const activeDurablePollsRef = useRef<Map<string, { cancelled: boolean; conversationId: string }>>(new Map());
+  const nextTurnGeneration = useCallback((assistantId: string) => {
+    const generation = (turnGenerationRef.current.get(assistantId) ?? 0) + 1;
+    turnGenerationRef.current.set(assistantId, generation);
+    return generation;
+  }, []);
+  const releaseConversationSend = useCallback((id: string) => {
+    if (sendingConversationRef.current === id) {
+      sendingConversationRef.current = null;
+      setSending(false);
+    }
+  }, []);
   const persistStreamFinal = useCallback(async (runtime: StreamRuntime, text: string) => {
     try {
       const conversations = await listConversations();
@@ -1160,7 +1233,7 @@ export default function SimpleChatScreen() {
   // lost, not a dead end) and auto-retried on reconnect / app-foreground / a
   // backoff timer. The user sees an honest "waiting to reconnect" state with a
   // manual "Retry now" — same model as iMessage/WhatsApp's clock → tick.
-  type QueuedSend = { history: ChatMessage[]; assistantId: string; attempts: number; durable?: boolean; jobId?: string };
+  type QueuedSend = { history: ChatMessage[]; assistantId: string; attempts: number; conversationId: string; durable?: boolean; jobId?: string; manualHold?: boolean };
   // Key recovery state by assistant message so concurrent conversations cannot
   // overwrite one another's retry history or timers.
   const queuedSendsRef = useRef<Map<string, QueuedSend>>(new Map());
@@ -1169,12 +1242,14 @@ export default function SimpleChatScreen() {
   const flushQueuedSendRef = useRef<(assistantId?: string) => void>(() => {});
   const sendingRef = useRef(false);
   const sendingConversationRef = useRef<string | null>(null);
+  const pauseResumeBusyRef = useRef(false);
+  const [pauseResumeBusy, setPauseResumeBusy] = useState(false);
 
   const [conversationId, setConversationId] = useState(() => makeConversationId());
   // Prevent React's asynchronous state updates from persisting the previous
   // chat under a newly selected conversation id during a chat switch.
   const loadedConversationIdRef = useRef(conversationId);
-  const currentConversationBusy = sending && sendingConversationRef.current === conversationId;
+  const currentConversationBusy = sendingConversationRef.current === conversationId;
   const currentConversationStreaming = Array.from(streamRuntimeRef.current.values()).some(
     (runtime) => runtime.conversationId === conversationId,
   );
@@ -1190,12 +1265,14 @@ export default function SimpleChatScreen() {
   const [isIncognito, setIsIncognito] = useState(false);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [conversationHistoryError, setConversationHistoryError] = useState<string | null>(null);
   const [historyQuery, setHistoryQuery] = useState('');
   // Manual "move to project" picker on a Chat History row — which row (if
   // any) currently has its project-picker expanded, and the project list to
   // populate it with.
   const [projectPickerId, setProjectPickerId] = useState<string | null>(null);
   const [availableProjects, setAvailableProjects] = useState<Project[]>([]);
+  const [projectsLoadError, setProjectsLoadError] = useState<string | null>(null);
   // In-chat search — finds a message within the CURRENTLY OPEN conversation and
   // jumps to it. Distinct from historyQuery above, which searches titles/bodies
   // ACROSS all saved conversations from the Chats list — that already existed;
@@ -1215,6 +1292,10 @@ export default function SimpleChatScreen() {
 
   // Planner: a single sheet hosting both Daily notes and Scheduled tasks as tabs.
   const [plannerOpen, setPlannerOpen] = useState(false);
+  const pendingNoteWriterOpenRef = useRef(false);
+  const pendingScheduleSheetOpenRef = useRef(false);
+  const pendingPlannerAfterScheduleDismissRef = useRef(false);
+  const scheduleOpenedFromPlannerRef = useRef(false);
   const [plannerTab, setPlannerTab] = useState<PlannerTab>('scheduled');
   // The full-screen writing surface (opened from the planner's Daily notes tab).
   const [noteWriterOpen, setNoteWriterOpen] = useState(false);
@@ -1228,23 +1309,37 @@ export default function SimpleChatScreen() {
   const [extractCandidates, setExtractCandidates] = useState<string[]>([]);
 
   const [session, setSession] = useState<Session | null>(null);
-  const [durableJobsActive, setDurableJobsActive] = useState(0);
   type AgentPhase = 'idle' | 'connecting' | 'thinking' | 'using_tool' | 'synthesizing' | 'paused' | 'reconnecting';
   const [agentActivity, setAgentActivity] = useState<Record<string, { phase: AgentPhase; tools: string[] }>>({});
-  const [agentToolRuns, setAgentToolRuns] = useState<Record<string, Array<{ name: string; status: 'running' | 'complete' | 'failed'; startedAt: number; durationMs?: number }>>>({});
+  const [agentToolRuns, setAgentToolRuns] = useState<Record<string, { name: string; status: 'running' | 'complete' | 'failed'; startedAt: number; durationMs?: number }[]>>({});
   const [agentRoutes, setAgentRoutes] = useState<Record<string, string>>({});
   const currentAgentActivity = agentActivity[conversationId] || { phase: 'idle' as AgentPhase, tools: [] };
   const agentPhase = currentAgentActivity.phase;
   const agentTools = currentAgentActivity.tools;
   const currentAgentToolRuns = agentToolRuns[conversationId] || [];
   const currentAgentRoute = agentRoutes[conversationId];
-  const formatPrefix = input.trim().match(/^\/(checklist|memo|table|study|meeting|executive)\b/i)?.[1];
-  const composerMode = /^\/task\b/i.test(input.trim()) ? 'Agent Task' : /^\/research\b/i.test(input.trim()) ? 'Research Brief' : /^\/verify\b/i.test(input.trim()) ? 'Verification' : /^\/critique\b/i.test(input.trim()) ? 'Critique' : /^\/doc\b/i.test(input.trim()) ? 'Document context' : /^\/nodoc\b/i.test(input.trim()) ? 'No document context' : /^\/fresh\b/i.test(input.trim()) ? 'Fresh context' : /^\/recent\s+\d+\b/i.test(input.trim()) ? 'Recent context' : formatPrefix ? `${formatPrefix[0].toUpperCase()}${formatPrefix.slice(1)} format` : null;
-  const [durableJobStates, setDurableJobStates] = useState<Array<{ jobId: string; assistantMessageId: string; status: string; updatedAt: number; error: string | null; retryable?: boolean; phase?: string; nextRetryAt?: number | null; servedModel?: string | null }>>([]);
-  const [durableJobsPaused, setDurableJobsPaused] = useState(false);
+  const formatPrefix = Platform.OS === 'android' ? input.trim().match(/^\/(checklist|memo|table|study|meeting|executive)\b/i)?.[1] : null;
+  const composerMode = Platform.OS === 'android'
+    ? /^\/task\b/i.test(input.trim()) ? 'Agent Task' : /^\/research\b/i.test(input.trim()) ? 'Research Brief' : /^\/verify\b/i.test(input.trim()) ? 'Verification' : /^\/critique\b/i.test(input.trim()) ? 'Critique' : /^\/doc\b/i.test(input.trim()) ? 'Document context' : /^\/nodoc\b/i.test(input.trim()) ? 'No document context' : /^\/fresh\b/i.test(input.trim()) ? 'Fresh context' : /^\/recent\s+\d+\b/i.test(input.trim()) ? 'Recent context' : formatPrefix ? `${formatPrefix[0].toUpperCase()}${formatPrefix.slice(1)} format` : null
+    : /^\/doc\b/i.test(input.trim()) ? 'Document context' : /^\/nodoc\b/i.test(input.trim()) ? 'No document context' : null;
+  const [durableJobStates, setDurableJobStates] = useState<{ jobId: string; assistantMessageId: string; status: string; updatedAt: number; error: string | null; retryable?: boolean; phase?: string; nextRetryAt?: number | null; servedModel?: string | null }[]>([]);
   const [hydratedLastConversation, setHydratedLastConversation] = useState(false);
   const markScheduledTaskRun = useScheduledTasksStore((s) => s.markRun);
   const markScheduledTaskPending = useScheduledTasksStore((s) => s.markPending);
+  const markScheduledTaskRunSafely = useCallback(async (
+    id: string,
+    status: 'completed' | 'failed' | 'exhausted',
+    resultPreview?: string,
+    run?: { conversationId?: string; assistantMessageId?: string },
+  ) => {
+    try {
+      await markScheduledTaskRun(id, status, resultPreview, run);
+      return true;
+    } catch (error) {
+      Alert.alert('Task result could not be saved', error instanceof Error ? error.message : 'The task result is available in its conversation. Retry saving it from Scheduled Tasks.');
+      return false;
+    }
+  }, [markScheduledTaskRun]);
 
   // Reattach durable fallback jobs after a foreground transition or cold start.
   // This is intentionally additive: jobs created by newer builds can be
@@ -1253,13 +1348,175 @@ export default function SimpleChatScreen() {
     if (!session || !hydratedLastConversation) return;
     const activeToken = getActiveToken(session);
     if (!activeToken) return;
+    const generationsAtStart = new Map(turnGenerationRef.current);
+    const generationIsCurrent = (assistantId: string) =>
+      (turnGenerationRef.current.get(assistantId) ?? 0) === (generationsAtStart.get(assistantId) ?? 0);
     const pending = await reconcilePendingChatJobs(activeToken);
     let savedConversations: Conversation[] | null = null;
-    let hasPausedJob = false;
-    const observedJobs: Array<{ jobId: string; assistantMessageId: string; status: string; updatedAt: number; error: string | null; retryable?: boolean; phase?: string; nextRetryAt?: number | null; servedModel?: string | null }> = [];
+    const observedJobs: { jobId: string; assistantMessageId: string; status: string; updatedAt: number; error: string | null; retryable?: boolean; phase?: string; nextRetryAt?: number | null; servedModel?: string | null }[] = [];
     for (const item of pending) {
+        if (!generationIsCurrent(item.assistantMessageId)) continue;
+        if (item.rejected) {
+          const rejectionText = item.rejectionMessage || 'The Gateway rejected this request before creating a job. Retry it or use the saved local task.';
+          if (item.jobId) {
+            const poll = activeDurablePollsRef.current.get(item.assistantMessageId);
+            if (poll) poll.cancelled = true;
+            activeDurablePollsRef.current.delete(item.assistantMessageId);
+            durableJobIdsRef.current.delete(item.assistantMessageId);
+            pendingTurnsRef.current.delete(item.assistantMessageId);
+            queuedSendsRef.current.delete(item.assistantMessageId);
+            const retryTimer = retryTimersRef.current.get(item.assistantMessageId);
+            if (retryTimer) clearTimeout(retryTimer);
+            retryTimersRef.current.delete(item.assistantMessageId);
+            turnGenerationRef.current.set(item.assistantMessageId, (turnGenerationRef.current.get(item.assistantMessageId) ?? 0) + 1);
+          }
+          if (Platform.OS === 'ios' && (item.scheduledTaskId || item.jobId)) {
+            const task = useScheduledTasksStore.getState().tasks.find((candidate) =>
+              candidate.id === item.scheduledTaskId || (!!item.jobId && candidate.jobId === item.jobId),
+            );
+            if (task && item.jobId && task.jobId === item.jobId) {
+              // The Gateway explicitly says the saved job no longer exists.
+              // Keep the local task and reminder, but unlink the dead job so
+              // Play can safely submit a new idempotent run.
+              try {
+                await useScheduledTasksStore.getState().markRemoteJobLost(task.id, rejectionText);
+                void NotificationsService.notifyTaskFailed(task.prompt, rejectionText, task.id, task.conversationId);
+              } catch {
+                // Preserve the 404 in the outbox so the task link can be
+                // repaired when local storage is writable again.
+                await rememberChatJob({
+                  jobId: item.jobId,
+                  assistantMessageId: item.assistantMessageId,
+                  conversationId: item.conversationId,
+                  scheduledTaskId: task.id,
+                  scheduledFor: item.scheduledFor,
+                  createdAt: item.createdAt,
+                }).catch(() => {});
+                Alert.alert('Task recovery could not be saved', 'The Gateway no longer has this run, but this iPhone could not update the task list. Free up device storage and retry from Scheduled Tasks.');
+              }
+            } else if (task?.submissionPending) {
+              // The saved task row and local reminder are the fallback; remove
+              // only the uncertain Gateway association so Play can run it.
+              await useScheduledTasksStore.getState().clearSubmissionPending(task.id).catch(() => {});
+            }
+          }
+          setMessages((previous) => previous.map((message) => message.id === item.assistantMessageId
+            ? { ...message, text: rejectionText, streaming: false, queued: false, failed: true }
+            : message));
+          if (item.jobId) {
+            await recordChatJobHistory({
+              jobId: item.jobId,
+              conversationId: item.conversationId,
+              assistantMessageId: item.assistantMessageId,
+              status: 'failed',
+              error: rejectionText,
+              completedAt: Date.now(),
+            }).catch(() => {});
+          }
+          if (item.conversationId) {
+            try {
+              if (!savedConversations) savedConversations = await listConversations();
+              const conversationSnapshot: Conversation[] = savedConversations;
+              const savedConversation = conversationSnapshot.find((conversation) => conversation.id === item.conversationId);
+              if (savedConversation) {
+                const messages = savedConversation.messages.map((message) => message.id === item.assistantMessageId
+                  ? { ...message, text: rejectionText, streaming: false, queued: false, failed: true }
+                  : message);
+                await saveConversation(savedConversation.id, messages, savedConversation.modelId);
+                savedConversations = conversationSnapshot.map((conversation) => conversation.id === savedConversation.id
+                  ? { ...conversation, messages }
+                  : conversation);
+              }
+            } catch {
+              // The original assistant bubble remains retryable in memory.
+            }
+          }
+          continue;
+        }
         observedJobs.push({ jobId: item.jobId, assistantMessageId: item.assistantMessageId, status: item.state.status, updatedAt: item.state.updatedAt, error: item.state.error, retryable: item.state.retryable, phase: item.state.phase, nextRetryAt: item.state.nextRetryAt, servedModel: item.state.servedModel });
-        if (item.state.status === 'paused') hasPausedJob = true;
+        if (item.scheduledFor && item.conversationId && item.state.status !== 'cancelled' && !useScheduledTasksStore.getState().tasks.some((task) => task.jobId === item.jobId)) {
+          const prompt = [...(item.messages ?? [])].reverse().find((message) => message.role === 'user')?.content;
+          if (typeof prompt === 'string' && prompt.trim()) {
+            try {
+              const scheduledStore = useScheduledTasksStore.getState();
+              const replacedTask = Platform.OS === 'ios' && item.scheduledTaskId
+                ? scheduledStore.tasks.find((task) => task.id === item.scheduledTaskId)
+                : undefined;
+              if (replacedTask) {
+                await scheduledStore.replaceRemoteTask(replacedTask.id, item.scheduledFor, {
+                  jobId: item.jobId,
+                  conversationId: item.conversationId,
+                  assistantMessageId: item.assistantMessageId,
+                  prompt,
+                });
+              } else {
+                await scheduledStore.addTask(prompt, item.scheduledFor, {
+                  jobId: item.jobId,
+                  conversationId: item.conversationId,
+                  assistantMessageId: item.assistantMessageId,
+                });
+              }
+            } catch (error) {
+              Alert.alert('Scheduled task recovery failed', error instanceof Error ? error.message : 'The accepted task is still attached to its chat and will be retried during the next sync.');
+            }
+          }
+        }
+        // Stop/New Chat may run while the Gateway status request or scheduled
+        // task restoration is in flight. Ignore this stale observation so it
+        // cannot put a cancelled turn back into the active composer state.
+        if (!generationIsCurrent(item.assistantMessageId)) continue;
+        if (['completed', 'failed', 'cancelled', 'dead_letter'].includes(item.state.status)) {
+          // AppState reconciliation can race the original foreground poll.
+          // Let exactly one observer settle this job and send its terminal UI
+          // update/notification.
+          const poll = activeDurablePollsRef.current.get(item.assistantMessageId);
+          if (poll) poll.cancelled = true;
+          activeDurablePollsRef.current.delete(item.assistantMessageId);
+        }
+        if (item.state.status === 'completed' && !item.state.text.trim()) {
+          const emptyError = item.state.error || 'The Gateway completed this request without returning any text. Start a fresh run.';
+          durableJobIdsRef.current.delete(item.assistantMessageId);
+          const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === item.jobId);
+          if (scheduled) {
+            await markScheduledTaskRunSafely(scheduled.id, 'exhausted', emptyError);
+            void NotificationsService.notifyTaskFailed(scheduled.prompt, emptyError, scheduled.id, item.conversationId);
+          }
+          // The Gateway may have marked this as completed, but an empty result
+          // is a client-visible failure and must be shown as such in history.
+          await recordChatJobHistory({ jobId: item.jobId, conversationId: item.conversationId, assistantMessageId: item.assistantMessageId, status: 'failed', error: emptyError, completedAt: item.state.updatedAt });
+          setMessages((prev) => prev.map((message) => message.id === item.assistantMessageId
+            ? { ...message, text: emptyError, streaming: false, queued: false, failed: true }
+            : message));
+          if (item.conversationId) {
+            savedConversations ??= await listConversations();
+            const saved = savedConversations.find((conversation) => conversation.id === item.conversationId);
+            if (saved) {
+              const failedIndex = saved.messages.findIndex((message) => message.id === item.assistantMessageId);
+              const retryMessages = failedIndex >= 0 ? saved.messages.slice(0, failedIndex) : saved.messages;
+              await saveConversation(saved.id, saved.messages.map((message) => message.id === item.assistantMessageId
+                ? { ...message, text: emptyError }
+                : message), saved.modelId);
+              if (!scheduled) {
+                const lastUserText = [...retryMessages].reverse().find((message) => message.role === 'user')?.text || '';
+                const retryHistory = await buildHistoryForSend(
+                  saved.id,
+                  buildSystemContextMessage(currentStyleOpts(lastUserText)),
+                  retryMessages,
+                  session,
+                  saved.modelId,
+                );
+                queuedSendsRef.current.set(item.assistantMessageId, {
+                  history: retryHistory,
+                  assistantId: item.assistantMessageId,
+                  attempts: 0,
+                  conversationId: item.conversationId,
+                });
+              }
+            }
+          }
+          await forgetChatJob(item.jobId);
+          continue;
+        }
         if (item.state.status === 'completed') {
           durableJobIdsRef.current.delete(item.assistantMessageId);
           setMessages((prev) => prev.map((message) => message.id === item.assistantMessageId
@@ -1267,12 +1524,12 @@ export default function SimpleChatScreen() {
             : message));
           const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === item.jobId);
           if (scheduled) {
-            await markScheduledTaskRun(scheduled.id, 'completed', item.state.text.slice(0, 160));
+            await markScheduledTaskRunSafely(scheduled.id, 'completed', item.state.text.slice(0, 160));
           }
           // Scheduled jobs can complete while a different chat is open. Update
           // the persisted conversation as well as the visible message list so
           // the answer is present when the push notification opens the chat.
-          if (item.conversationId && item.conversationId !== conversationId) {
+          if (item.conversationId) {
             savedConversations ??= await listConversations();
             const saved = savedConversations.find((conversation) => conversation.id === item.conversationId);
             if (saved) {
@@ -1285,44 +1542,62 @@ export default function SimpleChatScreen() {
               );
             }
           }
-          void NotificationsService.sendSystemNotification({
-          type: 'response_ready',
-          title: 'Expert AI response ready',
-          body: 'Your answer finished while Expert AI was closed.',
-          data: { type: 'response_ready', conversationId: item.conversationId || conversationId },
-        });
+          if (scheduled) {
+            void NotificationsService.notifyTaskCompleted(scheduled.prompt, scheduled.id, item.conversationId || conversationId);
+          } else {
+            void NotificationsService.sendSystemNotification({
+              type: 'response_ready',
+              title: 'Expert AI response ready',
+              body: 'Your answer finished while Expert AI was closed.',
+              data: { type: 'response_ready', conversationId: item.conversationId || conversationId },
+            });
+          }
         await forgetChatJob(item.jobId);
       } else if (item.state.status === 'failed' || item.state.status === 'cancelled' || item.state.status === 'dead_letter') {
         durableJobIdsRef.current.delete(item.assistantMessageId);
         const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === item.jobId);
         if (scheduled && (item.state.status === 'failed' || item.state.status === 'dead_letter')) {
-          await markScheduledTaskRun(scheduled.id, item.state.status === 'dead_letter' ? 'exhausted' : 'failed', item.state.error || (item.state.status === 'dead_letter' ? 'Retry budget exhausted; create a fresh scheduled task.' : 'The scheduled job failed.'));
+          const cannotRetry = item.state.status === 'dead_letter' || item.state.retryable === false;
+          await markScheduledTaskRunSafely(scheduled.id, cannotRetry ? 'exhausted' : 'failed', item.state.error || (cannotRetry ? 'This job cannot be retried; start a fresh task run.' : 'The scheduled job failed.'));
+          void NotificationsService.notifyTaskFailed(scheduled.prompt, item.state.error || undefined, scheduled.id, item.conversationId);
         }
-        if (item.state.status === 'failed' && item.conversationId) {
+        if ((item.state.status === 'failed' || item.state.status === 'dead_letter' || item.state.status === 'cancelled') && item.conversationId) {
           savedConversations ??= await listConversations();
           const saved = savedConversations.find((conversation) => conversation.id === item.conversationId);
           if (saved) {
-            const failedIndex = saved.messages.findIndex((message) => message.id === item.assistantMessageId);
-            const retryMessages = failedIndex >= 0 ? saved.messages.slice(0, failedIndex) : saved.messages;
-            const lastUserText = [...retryMessages].reverse().find((message) => message.role === 'user')?.text || '';
-            const retryHistory = await buildHistoryForSend(
-              saved.id,
-              buildSystemContextMessage(currentStyleOpts(lastUserText)),
-              retryMessages,
-              session,
-              saved.modelId,
-            );
-            queuedSendsRef.current.set(item.assistantMessageId, {
-              history: retryHistory,
-              assistantId: item.assistantMessageId,
-              attempts: 1,
-              durable: true,
-              jobId: item.jobId,
-            });
+            const failureText = item.state.text || item.state.error || (item.state.status === 'dead_letter'
+              ? 'This request exhausted its retry budget. Start a fresh request.'
+              : item.state.status === 'cancelled' ? 'This request was cancelled.' : 'The upstream model returned no response. Retry this task or choose another model.');
+            const failedMessages = saved.messages.map((message) => message.id === item.assistantMessageId
+              ? { ...message, text: failureText, streaming: false, queued: false, failed: item.state.status !== 'cancelled' }
+              : message);
+            await saveConversation(saved.id, failedMessages, saved.modelId);
+            if (item.state.status === 'failed' && item.state.retryable !== false) {
+              const failedIndex = saved.messages.findIndex((message) => message.id === item.assistantMessageId);
+              const retryMessages = failedIndex >= 0 ? saved.messages.slice(0, failedIndex) : saved.messages;
+              const lastUserText = [...retryMessages].reverse().find((message) => message.role === 'user')?.text || '';
+              const retryHistory = await buildHistoryForSend(
+                saved.id,
+                buildSystemContextMessage(currentStyleOpts(lastUserText)),
+                retryMessages,
+                session,
+                saved.modelId,
+              );
+              queuedSendsRef.current.set(item.assistantMessageId, {
+                history: retryHistory,
+                assistantId: item.assistantMessageId,
+                attempts: 1,
+                conversationId: item.conversationId,
+                durable: true,
+                jobId: item.jobId,
+              });
+            } else if (item.state.status !== 'cancelled') {
+              queuedSendsRef.current.delete(item.assistantMessageId);
+            }
           }
         }
         setMessages((prev) => prev.map((message) => message.id === item.assistantMessageId
-          ? { ...message, streaming: false, queued: false, failed: true, text: item.state.text }
+          ? { ...message, streaming: false, queued: false, failed: item.state.status !== 'cancelled', text: item.state.text || item.state.error || (item.state.status === 'dead_letter' ? 'This request exhausted its retry budget. Start a fresh request.' : item.state.status === 'cancelled' ? 'This request was cancelled.' : 'The upstream model returned no response. Retry this task or choose another model.') }
           : message));
         if (item.state.status === 'cancelled') await forgetChatJob(item.jobId);
       } else {
@@ -1330,17 +1605,14 @@ export default function SimpleChatScreen() {
           jobId: item.jobId,
           conversationId: item.conversationId || conversationId,
         });
-        if (item.state.text) {
-          setMessages((prev) => prev.map((message) => message.id === item.assistantMessageId
-                  ? { ...message, text: item.state.text, servedModel: item.state.servedModel ?? message.servedModel, streaming: false, queued: true, failed: false }
-            : message));
-        }
+        setMessages((prev) => prev.map((message) => message.id === item.assistantMessageId
+          ? { ...message, ...(item.state.text ? { text: item.state.text } : {}), servedModel: item.state.servedModel ?? message.servedModel, streaming: false, queued: true, failed: false }
+          : message));
       }
     }
-    setDurableJobsActive(durableJobIdsRef.current.size);
-    setDurableJobsPaused(hasPausedJob);
-    setDurableJobStates(observedJobs);
-  }, [session, hydratedLastConversation, conversationId, markScheduledTaskRun]);
+    setDurableJobStates(observedJobs.filter((job) => generationIsCurrent(job.assistantMessageId)));
+    return observedJobs;
+  }, [session, hydratedLastConversation, conversationId, markScheduledTaskRunSafely]);
 
   useEffect(() => {
     if (session?.token) flushResponseFeedback(session.token).catch(() => {});
@@ -1349,23 +1621,19 @@ export default function SimpleChatScreen() {
       if (state === 'active') {
         if (session?.token) flushResponseFeedback(session.token).catch(() => {});
         reconcileDurableJobs().catch(() => {});
+        useScheduledTasksStore.getState().restoreMissingReminders().catch(() => {});
       }
     });
     const notificationSub = NotificationsService.addResponseListener((data) => {
-      if (data.type === 'response_ready' || data.type === 'task_completed' || data.type === 'task_failed') {
+      if (data.type === 'response_ready' || data.type === 'response_failed' || data.type === 'task_completed' || data.type === 'task_failed') {
         reconcileDurableJobs().catch(() => {});
       }
     });
-    NotificationsService.getLastResponseData().then((data) => {
-      if (data?.type === 'response_ready' || data?.type === 'task_completed' || data?.type === 'task_failed') {
-        reconcileDurableJobs().catch(() => {});
-      }
-    }).catch(() => {});
     return () => {
       sub.remove();
       notificationSub?.remove();
     };
-  }, [reconcileDurableJobs, session?.token]);
+  }, [reconcileDurableJobs, session?.token, router]);
   const [modelId, setModelId] = useState(DEFAULT_MODEL_ID);
   const [accountOpen, setAccountOpen] = useState(false);
   const [webAccountTab, setWebAccountTab] = useState<'balance' | 'plan' | 'history'>('balance');
@@ -1449,6 +1717,9 @@ export default function SimpleChatScreen() {
   // identity is real and traceable server-side (see startFreeTrial), but the UI must
   // never go straight from a tap to a live chat box with zero acknowledgment step.
   const [trialGateOpen, setTrialGateOpen] = useState(false);
+  const [trialStarting, setTrialStarting] = useState(false);
+  const trialStartInFlightRef = useRef(false);
+  const pendingTrialGateRef = useRef(false);
   const [helpCenterOpen, setHelpCenterOpen] = useState(false);
 
   useEffect(() => {
@@ -1461,8 +1732,8 @@ export default function SimpleChatScreen() {
   }, [signInOpen]);
 
   // AI Disclaimer modal (shown once per device on first launch)
-  const [aiDisclaimerSeen, setAiDisclaimerSeen] = useState(false);
   const [showAiDisclaimer, setShowAiDisclaimer] = useState(false);
+  const [aiDisclosureAccepted, setAiDisclosureAccepted] = useState(false);
 
 
   const tier = getActiveTier(session);
@@ -1494,6 +1765,9 @@ export default function SimpleChatScreen() {
   }, []);
 
   useEffect(() => {
+    // Keep the APK's existing notification initialization timing. iOS installs
+    // the handler from the root layout so it is active before Chat mounts.
+    if (Platform.OS === 'android') NotificationsService.init().catch(() => {});
     consumeGoogleRedirectSession()
       .then((redirectSession) => redirectSession ?? restoreSession())
       .then(setSession)
@@ -1504,17 +1778,17 @@ export default function SimpleChatScreen() {
     useThemeStore.getState().load().catch((err) => {
       console.warn('[Theme] Failed to load, using defaults:', err);
     });
-    NotificationsService.init().catch(() => {});
-
     // Show AI disclaimer on first launch (check if user has seen it before)
     const checkDisclaimerSeen = async () => {
       try {
         const seen = await useThemeStore.getState().getAiDisclaimerSeen?.();
         if (!seen) {
           setShowAiDisclaimer(true);
+        } else {
+          setAiDisclosureAccepted(true);
+          setShowAiDisclaimer(false);
         }
-        setAiDisclaimerSeen(!!seen);
-      } catch (err) {
+      } catch {
         // If check fails, show disclaimer to be safe
         setShowAiDisclaimer(true);
       }
@@ -1744,14 +2018,68 @@ export default function SimpleChatScreen() {
 
   // Persist the active conversation after each exchange settles (not per
   // streamed token — only once sending finishes, so it's a single write).
+  const [historyPersistenceError, setHistoryPersistenceError] = useState<string | null>(null);
+  const persistConversationSnapshot = useCallback(async (id: string, snapshot: DisplayMessage[], model: string) => {
+    try {
+      await saveConversation(id, snapshot.map((m) => ({
+        id: m.id,
+        role: m.role,
+        text: m.text,
+        ...(m.servedModel ? { servedModel: m.servedModel } : {}),
+        ...(Platform.OS === 'ios' && m.failed ? { failed: true } : {}),
+        ...(Platform.OS === 'ios' && m.queued ? { queued: true } : {}),
+        ...(Platform.OS === 'ios' && m.streaming ? { interrupted: true } : {}),
+      })), model);
+      setHistoryPersistenceError(null);
+    } catch {
+      setHistoryPersistenceError('This conversation could not be saved on this device. Keep Expert AI open and try again.');
+    }
+  }, []);
+
+  const persistConversationForChatSwitch = useCallback((
+    id: string,
+    model: string,
+    incognito: boolean,
+    pendingAssistantIds: Set<string>,
+    queuedAssistantIds: Set<string>,
+    streamTextByAssistantId: Map<string, string>,
+  ) => {
+    if (incognito) return;
+    const acceptedAssistantIds = new Set([...durableJobIdsRef.current.entries()]
+      .filter(([, job]) => job.conversationId === id)
+      .map(([assistantId]) => assistantId));
+    const snapshot = messagesRef.current.map((message) => {
+      const streamText = streamTextByAssistantId.get(message.id);
+      if (streamText !== undefined) {
+        return {
+          ...message,
+          text: `${message.text}${streamText}` || 'This response was stopped. Tap Retry to try again.',
+          streaming: false,
+          queued: false,
+          failed: true,
+        };
+      }
+      if (acceptedAssistantIds.has(message.id)) {
+        return { ...message, text: message.text || 'Response continuing in the background.', streaming: false, queued: true, failed: false };
+      }
+      if (pendingAssistantIds.has(message.id) || queuedAssistantIds.has(message.id) || message.streaming) {
+        return {
+          ...message,
+          text: message.text || 'This request was stopped. Tap Retry to try again.',
+          streaming: false,
+          queued: false,
+          failed: true,
+        };
+      }
+      return message;
+    });
+    void persistConversationSnapshot(id, snapshot, model);
+  }, [persistConversationSnapshot]);
+
   useEffect(() => {
-    if (sending || messages.length === 0 || isIncognito || loadedConversationIdRef.current !== conversationId) return;
-    saveConversation(
-      conversationId,
-      messages.map((m) => ({ id: m.id, role: m.role, text: m.text })),
-      modelId,
-    );
-  }, [messages, sending, conversationId, modelId, isIncognito]);
+    if (!hydratedLastConversation || sending || messages.length === 0 || isIncognito || loadedConversationIdRef.current !== conversationId) return;
+    void persistConversationSnapshot(conversationId, messages, modelId);
+  }, [messages, sending, conversationId, modelId, isIncognito, hydratedLastConversation, persistConversationSnapshot]);
 
   // While a response is still streaming, the effect above intentionally skips
   // saving (avoids a disk write per token). But that leaves a real gap: if the
@@ -1767,36 +2095,53 @@ export default function SimpleChatScreen() {
     const checkpoint = () => {
       const { conversationId: id, messages: msgs, modelId: model, isIncognito: incog } = latestStreamStateRef.current;
       if (msgs.length === 0 || incog || loadedConversationIdRef.current !== id) return;
-      saveConversation(id, msgs.map((m) => ({ id: m.id, role: m.role, text: m.text })), model);
+      void persistConversationSnapshot(id, msgs, model);
     };
     checkpoint(); // save immediately when a turn starts, not up to 2s later —
                   // a Fold display-switch that recreates the Activity in the first
                   // second would otherwise lose the whole exchange.
     const interval = setInterval(checkpoint, 1500);
     return () => clearInterval(interval);
-  }, [sending, isIncognito]);
+  }, [sending, isIncognito, persistConversationSnapshot]);
 
   // Restore whichever conversation was on screen last time, so a cold relaunch
   // (the app can be killed by the OS in the background — e.g. a Samsung Fold's
   // inner/outer display switch is known to trigger this) resumes where the
   // user left off instead of opening a blank "new chat".
   useEffect(() => {
+    let cancelled = false;
     (async () => {
-      const lastId = await getLastActiveConversationId();
-      if (lastId) {
-        const all = await listConversations();
-        const found = all.find((c) => c.id === lastId);
-        if (found) {
-          loadedConversationIdRef.current = found.id;
-          setConversationId(found.id);
-          setMessages(found.messages.map((m) => ({ ...m })));
-          if (isModelUnlocked(found.modelId, tier)) setModelId(found.modelId);
-          const draft = await getDraft(found.id);
-          if (draft) setInput(draft);
+      try {
+        const lastId = await getLastActiveConversationId();
+        if (lastId) {
+          const all = await listConversations();
+          const found = all.find((c) => c.id === lastId);
+          if (found && !cancelled) {
+            loadedConversationIdRef.current = found.id;
+            setConversationId(found.id);
+            setMessages(found.messages.map((m) => {
+              const { interrupted, ...message } = m;
+              return Platform.OS === 'ios' && interrupted
+                ? {
+                    ...message,
+                    text: message.text || 'This response was interrupted. Tap Retry to try again.',
+                    failed: true,
+                    queued: false,
+                  }
+                : message;
+            }));
+            if (isModelUnlocked(found.modelId, tier)) setModelId(found.modelId);
+            const draft = await getDraft(found.id);
+            if (draft && !cancelled) setInput(draft);
+          }
         }
+      } catch {
+        if (!cancelled) setHistoryPersistenceError('Chat history could not be loaded from this device. Saved chats have not been overwritten.');
+      } finally {
+        if (!cancelled) setHydratedLastConversation(true);
       }
-      setHydratedLastConversation(true);
     })();
+    return () => { cancelled = true; };
     // Runs once on mount only — later tier changes are handled by the existing
     // "selected model still unlocked" effect above, not by re-running this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1824,7 +2169,12 @@ export default function SimpleChatScreen() {
   }, [input, conversationId, hydratedLastConversation, isIncognito]);
 
   const refreshHistory = useCallback(async () => {
-    setConversations(await listConversations());
+    try {
+      setConversations(await listConversations());
+      setConversationHistoryError(null);
+    } catch {
+      setConversationHistoryError('Chat history could not be loaded. Saved chats have not been changed.');
+    }
   }, []);
 
   // Client-side search across titles and message bodies of the already-loaded,
@@ -1842,16 +2192,20 @@ export default function SimpleChatScreen() {
   useEffect(() => {
     if (historyOpen) {
       refreshHistory();
-      listProjects().then(setAvailableProjects).catch(() => setAvailableProjects([]));
+      listProjects().then((items) => { setAvailableProjects(items); setProjectsLoadError(null); }).catch(() => setProjectsLoadError('Saved projects could not be loaded.'));
     } else {
       setProjectPickerId(null);
     }
   }, [historyOpen, refreshHistory]);
 
   const handleAssignProject = useCallback(async (conversationIdToAssign: string, projectId: string | null) => {
-    await assignConversationToProject(conversationIdToAssign, projectId);
-    setProjectPickerId(null);
-    refreshHistory();
+    try {
+      await assignConversationToProject(conversationIdToAssign, projectId);
+      setProjectPickerId(null);
+      refreshHistory();
+    } catch {
+      Alert.alert('Chat not moved', 'Your project assignment could not be saved. Try again.');
+    }
   }, [refreshHistory]);
 
   // The workspace panel's Projects tab lists each project's linked chats —
@@ -1880,6 +2234,79 @@ export default function SimpleChatScreen() {
 
   const handleNewChat = useCallback(() => {
     runAfterClosingDocument(() => {
+      const targetConversationId = sendingConversationRef.current ?? conversationId;
+      if (Platform.OS === 'ios') {
+        const pendingIds = new Set([...pendingTurnsRef.current.entries()]
+          .filter(([, pending]) => pending.conversationId === targetConversationId)
+          .map(([assistantId]) => assistantId));
+        const queuedIds = new Set([...queuedSendsRef.current.entries()]
+          .filter(([, queued]) => queued.conversationId === targetConversationId)
+          .map(([assistantId]) => assistantId));
+        const streamText = new Map([...streamRuntimeRef.current.values()]
+          .filter((runtime) => runtime.conversationId === targetConversationId)
+          .map((runtime) => [runtime.assistantId, runtime.pendingText]));
+        if (pendingIds.size || queuedIds.size || streamText.size) {
+          persistConversationForChatSwitch(targetConversationId, modelId, isIncognito, pendingIds, queuedIds, streamText);
+        }
+        for (const assistantId of queuedIds) {
+          const queued = queuedSendsRef.current.get(assistantId);
+          if (queued && !durableJobIdsRef.current.has(assistantId)) queued.manualHold = true;
+          const timer = retryTimersRef.current.get(assistantId);
+          if (timer) clearTimeout(timer);
+          retryTimersRef.current.delete(assistantId);
+        }
+      }
+      if (sendingConversationRef.current) {
+        const sendingId = sendingConversationRef.current;
+        for (const [assistantId, pending] of pendingTurnsRef.current) {
+          if (pending.conversationId === sendingId) {
+            nextTurnGeneration(assistantId);
+            pendingTurnsRef.current.delete(assistantId);
+            if (Platform.OS === 'ios') {
+              const accepted = durableJobIdsRef.current.has(assistantId);
+              setMessages((prev) => prev.map((message) => message.id === assistantId
+                ? accepted
+                  ? { ...message, text: message.text || 'Response continuing in the background.', streaming: false, queued: true, failed: false }
+                  : {
+                    ...message,
+                    text: message.text || 'This request was stopped. Tap Retry to try again.',
+                    streaming: false,
+                    queued: false,
+                    failed: true,
+                  }
+                : message));
+            }
+          }
+        }
+        turnGenerationRef.current.set(sendingId, (turnGenerationRef.current.get(sendingId) ?? 0) + 1);
+        for (const runtime of streamRuntimeRef.current.values()) {
+          if (runtime.conversationId === sendingId) runtime.controller.abort();
+        }
+        for (const [assistantId, job] of durableJobIdsRef.current) {
+          if (job.conversationId === sendingId) {
+            // Once a turn has a Gateway job ID it belongs to that conversation,
+            // not to the foreground composer. Switching chats must leave the
+            // job running and its local association intact so it can finish and
+            // reconcile into its original transcript while the new chat sends.
+            if (Platform.OS === 'ios') continue;
+            const token = session ? getActiveToken(session) : null;
+            if (token) void cancelChatJob(token, job.jobId).catch(() => {});
+            const poll = activeDurablePollsRef.current.get(assistantId);
+            if (poll) poll.cancelled = true;
+            durableJobIdsRef.current.delete(assistantId);
+            void forgetChatJob(job.jobId);
+            void forgetChatJobIntent(assistantId);
+          }
+        }
+        for (const runtime of streamRuntimeRef.current.values()) {
+          if (runtime.conversationId === sendingId) {
+            if (runtime.raf != null) cancelAnimationFrame(runtime.raf);
+            streamRuntimeRef.current.delete(runtime.assistantId);
+          }
+        }
+        sendingConversationRef.current = null;
+        setSending(false);
+      }
       const id = makeConversationId();
       loadedConversationIdRef.current = id;
       setConversationId(id);
@@ -1889,13 +2316,85 @@ export default function SimpleChatScreen() {
       setIsIncognito(false);
       setEditingMessageId(null);
       setHistoryOpen(false);
+      inputRef.current?.focus();
     });
-  }, [runAfterClosingDocument]);
+  }, [runAfterClosingDocument, session, nextTurnGeneration, persistConversationForChatSwitch, modelId, isIncognito, conversationId]);
 
   // Same as handleNewChat, but the resulting conversation is never written to
   // disk or shown in Chats — see the isIncognito state comment above.
   const handleNewIncognitoChat = useCallback(() => {
     runAfterClosingDocument(() => {
+      const targetConversationId = sendingConversationRef.current ?? conversationId;
+      if (Platform.OS === 'ios') {
+        const pendingIds = new Set([...pendingTurnsRef.current.entries()]
+          .filter(([, pending]) => pending.conversationId === targetConversationId)
+          .map(([assistantId]) => assistantId));
+        const queuedIds = new Set([...queuedSendsRef.current.entries()]
+          .filter(([, queued]) => queued.conversationId === targetConversationId)
+          .map(([assistantId]) => assistantId));
+        const streamText = new Map([...streamRuntimeRef.current.values()]
+          .filter((runtime) => runtime.conversationId === targetConversationId)
+          .map((runtime) => [runtime.assistantId, runtime.pendingText]));
+        if (pendingIds.size || queuedIds.size || streamText.size) {
+          persistConversationForChatSwitch(targetConversationId, modelId, isIncognito, pendingIds, queuedIds, streamText);
+        }
+        for (const assistantId of queuedIds) {
+          const queued = queuedSendsRef.current.get(assistantId);
+          if (queued && !durableJobIdsRef.current.has(assistantId)) queued.manualHold = true;
+          const timer = retryTimersRef.current.get(assistantId);
+          if (timer) clearTimeout(timer);
+          retryTimersRef.current.delete(assistantId);
+        }
+      }
+      if (sendingConversationRef.current) {
+        const sendingId = sendingConversationRef.current;
+        for (const [assistantId, pending] of pendingTurnsRef.current) {
+          if (pending.conversationId === sendingId) {
+            nextTurnGeneration(assistantId);
+            pendingTurnsRef.current.delete(assistantId);
+            if (Platform.OS === 'ios') {
+              const accepted = durableJobIdsRef.current.has(assistantId);
+              setMessages((prev) => prev.map((message) => message.id === assistantId
+                ? accepted
+                  ? { ...message, text: message.text || 'Response continuing in the background.', streaming: false, queued: true, failed: false }
+                  : {
+                    ...message,
+                    text: message.text || 'This request was stopped. Tap Retry to try again.',
+                    streaming: false,
+                    queued: false,
+                    failed: true,
+                  }
+                : message));
+            }
+          }
+        }
+        turnGenerationRef.current.set(sendingId, (turnGenerationRef.current.get(sendingId) ?? 0) + 1);
+        for (const runtime of streamRuntimeRef.current.values()) {
+          if (runtime.conversationId === sendingId) runtime.controller.abort();
+        }
+        for (const [assistantId, job] of durableJobIdsRef.current) {
+          if (job.conversationId === sendingId) {
+            // Incognito only applies to the new conversation. Preserve a prior
+            // conversation's already accepted Gateway job and recovery record.
+            if (Platform.OS === 'ios') continue;
+            const token = session ? getActiveToken(session) : null;
+            if (token) void cancelChatJob(token, job.jobId).catch(() => {});
+            const poll = activeDurablePollsRef.current.get(assistantId);
+            if (poll) poll.cancelled = true;
+            durableJobIdsRef.current.delete(assistantId);
+            void forgetChatJob(job.jobId);
+            void forgetChatJobIntent(assistantId);
+          }
+        }
+        for (const runtime of streamRuntimeRef.current.values()) {
+          if (runtime.conversationId === sendingId) {
+            if (runtime.raf != null) cancelAnimationFrame(runtime.raf);
+            streamRuntimeRef.current.delete(runtime.assistantId);
+          }
+        }
+        sendingConversationRef.current = null;
+        setSending(false);
+      }
       const id = makeConversationId();
       loadedConversationIdRef.current = id;
       setConversationId(id);
@@ -1905,8 +2404,9 @@ export default function SimpleChatScreen() {
       setIsIncognito(true);
       setEditingMessageId(null);
       setHistoryOpen(false);
+      inputRef.current?.focus();
     });
-  }, [runAfterClosingDocument]);
+  }, [runAfterClosingDocument, session, nextTurnGeneration, persistConversationForChatSwitch, modelId, isIncognito, conversationId]);
 
   const handleOpenConversation = useCallback((conversation: Conversation) => {
     runAfterClosingDocument(() => {
@@ -1991,6 +2491,9 @@ export default function SimpleChatScreen() {
   // the normal composer.
   const documentChatOpen = useDocumentChatStore((s) => s.open);
   const activeDocument = useDocumentChatStore((s) => s.activeDocument);
+  const documentPersistenceError = useDocumentChatStore((s) => s.persistenceError);
+  const retryDocumentPersistence = useDocumentChatStore((s) => s.retryPersistence);
+  const flushDocumentPersistence = useDocumentChatStore((s) => s.flushPersistence);
   const documentChatClose = useDocumentChatStore((s) => s.close);
   const documentChatUpdateContent = useDocumentChatStore((s) => s.updateContent);
   // Rendered markdown by default (fast to scroll, matches how the file
@@ -2017,6 +2520,16 @@ export default function SimpleChatScreen() {
   const [docCardCollapsed, setDocCardCollapsed] = useState(false);
   const [docCommitting, setDocCommitting] = useState(false);
   const docDirty = !!activeDocument && activeDocument.content !== activeDocument.original;
+  const handleRetryDocumentPersistence = useCallback(() => {
+    void retryDocumentPersistence().catch(() => {});
+  }, [retryDocumentPersistence]);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') void flushDocumentPersistence().catch(() => {});
+    });
+    return () => subscription.remove();
+  }, [flushDocumentPersistence]);
 
   const handleCommitDocument = useCallback(async () => {
     if (!activeDocument) return;
@@ -2029,7 +2542,11 @@ export default function SimpleChatScreen() {
         `Update ${activeDocument.path} via Expert AI`,
         activeDocument.sha,
       );
-      documentChatMarkCommitted(sha, activeDocument.content);
+      documentChatMarkCommitted(sha, activeDocument.content, {
+        archiveId: activeDocument.archiveId,
+        repoFullName: activeDocument.repoFullName,
+        path: activeDocument.path,
+      });
       buzz(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
     } catch (err) {
       if (err instanceof GithubApiError && err.status === 409) {
@@ -2075,7 +2592,51 @@ export default function SimpleChatScreen() {
 
   const handleNewChatInProject = useCallback((projectId: string) => {
     runAfterClosingDocument(() => {
+      const sendingId = sendingConversationRef.current;
+      if (Platform.OS === 'ios' && sendingId) {
+        const pendingIds = new Set([...pendingTurnsRef.current.entries()]
+          .filter(([, pending]) => pending.conversationId === sendingId)
+          .map(([assistantId]) => assistantId));
+        const queuedIds = new Set([...queuedSendsRef.current.entries()]
+          .filter(([, queued]) => queued.conversationId === sendingId)
+          .map(([assistantId]) => assistantId));
+        const streamText = new Map([...streamRuntimeRef.current.values()]
+          .filter((runtime) => runtime.conversationId === sendingId)
+          .map((runtime) => [runtime.assistantId, runtime.pendingText]));
+        if (pendingIds.size || queuedIds.size || streamText.size) {
+          persistConversationForChatSwitch(sendingId, modelId, isIncognito, pendingIds, queuedIds, streamText);
+        }
+        for (const assistantId of pendingIds) {
+          nextTurnGeneration(assistantId);
+          pendingTurnsRef.current.delete(assistantId);
+          setMessages((previous) => previous.map((message) => message.id === assistantId
+            ? { ...message, text: message.text || 'This request was stopped. Tap Retry to try again.', streaming: false, queued: false, failed: true }
+            : message));
+        }
+        for (const assistantId of queuedIds) {
+          const queued = queuedSendsRef.current.get(assistantId);
+          if (queued && !durableJobIdsRef.current.has(assistantId)) queued.manualHold = true;
+          const timer = retryTimersRef.current.get(assistantId);
+          if (timer) clearTimeout(timer);
+          retryTimersRef.current.delete(assistantId);
+        }
+        for (const runtime of streamRuntimeRef.current.values()) {
+          if (runtime.conversationId !== sendingId) continue;
+          turnGenerationRef.current.set(runtime.assistantId, runtime.generation + 1);
+          runtime.controller.abort();
+          if (runtime.raf != null) cancelAnimationFrame(runtime.raf);
+          streamRuntimeRef.current.delete(runtime.assistantId);
+          setMessages((previous) => previous.map((message) => message.id === runtime.assistantId
+            ? { ...message, text: message.text || 'This response was stopped. Tap Retry to try again.', streaming: false, queued: false, failed: true }
+            : message));
+        }
+        // Accepted durable jobs stay attached to their original conversation;
+        // cancelling this foreground screen must not cancel server work.
+        sendingConversationRef.current = null;
+        setSending(false);
+      }
       const id = makeConversationId();
+      if (Platform.OS === 'ios') loadedConversationIdRef.current = id;
       setConversationId(id);
       setMessages([]);
       setInput('');
@@ -2083,9 +2644,11 @@ export default function SimpleChatScreen() {
       setIsIncognito(false);
       setEditingMessageId(null);
       setSidePanelOpen(false);
+      // A project chat is a new conversation boundary. Accepted durable jobs
+      // remain attached to their original transcript and keep reconciling.
       createEmptyConversation(id, projectId, modelId).then(refreshHistory).catch(() => {});
     });
-  }, [refreshHistory, modelId, runAfterClosingDocument]);
+  }, [refreshHistory, modelId, isIncognito, runAfterClosingDocument, persistConversationForChatSwitch, nextTurnGeneration]);
 
   const handleTogglePin = useCallback(async (id: string) => {
     await togglePinConversation(id);
@@ -2149,12 +2712,24 @@ export default function SimpleChatScreen() {
    *  history preview) don't have to re-derive it from React state, which is
    *  stale inside this same async closure right after streaming ends. */
   const runCompletion = useCallback(
-    async (history: ChatMessage[], assistantId: string): Promise<{ success: boolean; text: string }> => {
+    async (history: ChatMessage[], assistantId: string, generation = nextTurnGeneration(assistantId), targetConversationId = conversationId): Promise<{ success: boolean; text: string }> => {
+      if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+        setShowAiDisclaimer(true);
+        pendingTurnsRef.current.delete(assistantId);
+        releaseConversationSend(targetConversationId);
+        setMessages((previous) => previous.map((message) => message.id === assistantId
+          ? { ...message, streaming: false, queued: false, failed: true, text: 'Agree to the AI data disclosure, then retry this request.' }
+          : message));
+        return { success: false, text: 'Agree to the AI data disclosure before sending content.' };
+      }
+      const pending = pendingTurnsRef.current.get(assistantId);
+      if (pending?.generation === generation) pendingTurnsRef.current.delete(assistantId);
       const controller = new AbortController();
       const runtime: StreamRuntime = {
         controller,
-        conversationId,
+        conversationId: targetConversationId,
         assistantId,
+        generation,
         pendingText: '',
         raf: null,
         lastPersistAt: 0,
@@ -2167,13 +2742,17 @@ export default function SimpleChatScreen() {
       // Snapshot which document (if any) was open when this turn started, so
       // a later ```document block only ever applies to that same file even
       // if the user closes it or opens a different one while this streams.
-      const docAtSendTime = useDocumentChatStore.getState().activeDocument;
-      const targetDocForEdit = docAtSendTime ? { archiveId: docAtSendTime.archiveId, path: docAtSendTime.path } : null;
-
       // Check if query should route to AEC Knowledge. A multimodal (image) message has no
       // plain-text content to keyword-match against — AEC routing only ever applies to text.
       const lastUserMessage = history.filter((m) => m.role === 'user').pop();
       const lastUserText = typeof lastUserMessage?.content === 'string' ? lastUserMessage.content : '';
+      const docAtSendTime = useDocumentChatStore.getState().activeDocument;
+      const targetDocForEdit = docAtSendTime && currentStyleOpts(lastUserText).document
+        ? { archiveId: docAtSendTime.archiveId, path: docAtSendTime.path }
+        : null;
+      const hasAnswerContent = () => fullText
+        .replace(/^⚠️ AEC Knowledge isn't connected — reconnect it in Settings\. Answering from general knowledge instead\.\s*/u, '')
+        .trim().length > 0;
       const shouldUseAEC = lastUserMessage && AECKnowledgeService.shouldUseAECKnowledge(lastUserText);
 
       if (shouldUseAEC) {
@@ -2212,6 +2791,7 @@ export default function SimpleChatScreen() {
                 mpcLink,
                 query,
                 (chunk) => {
+                  if (turnGenerationRef.current.get(assistantId) !== generation) return;
                   fullText += chunk;
                   runtime.pendingText += chunk;
                   if (runtime.raf == null) {
@@ -2219,18 +2799,22 @@ export default function SimpleChatScreen() {
                   }
                 },
                 () => {
+                  if (turnGenerationRef.current.get(assistantId) !== generation) { resolve(); return; }
                   console.log('[Chat] AEC query success');
                   if (runtime.raf != null) {
                     cancelAnimationFrame(runtime.raf);
                     flushPending(assistantId);
                   }
+                  // An empty knowledge-base response is not a completed answer;
+                  // keep the runtime alive and continue through the Gateway model.
+                  if (!fullText.trim()) { resolve(); return; }
                   success = true;
                   void persistStreamFinal(runtime, fullText);
                   streamRuntimeRef.current.delete(assistantId);
                   queuedSendsRef.current.delete(assistantId);
                   const successTimer = retryTimersRef.current.get(assistantId);
                   if (successTimer) { clearTimeout(successTimer); retryTimersRef.current.delete(assistantId); }
-                  setSending(false);
+                  releaseConversationSend(runtime.conversationId);
                   setMessages((prev) =>
                     prev.map((m) =>
                       m.id === assistantId
@@ -2241,6 +2825,7 @@ export default function SimpleChatScreen() {
                   resolve();
                 },
                 (err) => {
+                  if (turnGenerationRef.current.get(assistantId) !== generation) { resolve(); return; }
                   console.error('[Chat] AEC query failed:', err.message);
                   if (runtime.raf != null) {
                     cancelAnimationFrame(runtime.raf);
@@ -2251,16 +2836,14 @@ export default function SimpleChatScreen() {
                 },
               );
             }).catch((err) => {
-              console.warn('[Chat] AEC error, showing to user');
+              console.warn('[Chat] AEC lookup failed; continuing with the Gateway model.');
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId
-                    ? { ...m, streaming: false, text: `❌ Error querying AEC: ${err.message}` }
+                    ? { ...m, text: fullText }
                     : m
                 ),
               );
-              void persistStreamFinal(runtime, fullText);
-              setSending(false);
             });
 
             if (success) {
@@ -2281,23 +2864,30 @@ export default function SimpleChatScreen() {
       console.log('[Chat] Using Claude');
 
       const runStream = async (turnHistory: ChatMessage[]): Promise<void> => {
-        setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'thinking', tools: previous[conversationId]?.tools || [] } }));
+        setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'thinking', tools: previous[runtime.conversationId]?.tools || [] } }));
         await streamChatCompletion(
           turnHistory,
-          { token, model: modelId, signal: controller.signal },
+          {
+            token,
+            model: modelId,
+            signal: controller.signal,
+          },
           {
             onPhase: (phase) => {
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
               if (phase === 'complete' || phase === 'error') {
-                setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'idle', tools: phase === 'complete' ? [] : (previous[conversationId]?.tools || []) } }));
+                setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'idle', tools: phase === 'complete' ? [] : (previous[runtime.conversationId]?.tools || []) } }));
               } else {
-                setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase, tools: previous[conversationId]?.tools || [] } }));
+                setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase, tools: previous[runtime.conversationId]?.tools || [] } }));
               }
             },
             onModel: (servedModel) => {
-              setAgentRoutes((previous) => ({ ...previous, [conversationId]: servedModel }));
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
+              setAgentRoutes((previous) => ({ ...previous, [runtime.conversationId]: servedModel }));
               setMessages((previous) => previous.map((message) => message.id === assistantId ? { ...message, servedModel } : message));
             },
             onDelta: (chunk) => {
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
               fullText += chunk;
               runtime.pendingText += chunk;
               if (runtime.raf == null) {
@@ -2305,6 +2895,7 @@ export default function SimpleChatScreen() {
               }
             },
             onDone: () => {
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
               // Some fetch/SSE implementations can deliver a late error after
               // the terminal event (especially when the app is backgrounded).
               // Mark completion before any async-adjacent cleanup so that such
@@ -2317,29 +2908,43 @@ export default function SimpleChatScreen() {
                 flushPending(assistantId);
               }
               streamRuntimeRef.current.delete(assistantId);
-              success = true;
-              queuedSendsRef.current.delete(assistantId);
+              success = hasAnswerContent();
+              if (success) queuedSendsRef.current.delete(assistantId);
+              else queuedSendsRef.current.set(assistantId, {
+                history: turnHistory,
+                assistantId,
+                attempts: 0,
+                conversationId: runtime.conversationId,
+              });
               const completedTimer = retryTimersRef.current.get(assistantId);
               if (completedTimer) { clearTimeout(completedTimer); retryTimersRef.current.delete(assistantId); }
-              const documentDisplayText = maybeApplyDocumentEdit(fullText, targetDocForEdit);
+              const documentDisplayText = maybeApplyDocumentEdit(fullText, targetDocForEdit, lastUserText);
               setMessages((prev) =>
                 prev.map((m) =>
                   m.id === assistantId
-                    ? { ...m, ...(documentDisplayText != null ? { text: documentDisplayText } : {}), streaming: false, queued: false, failed: false }
+                    ? {
+                        ...m,
+                        ...(documentDisplayText != null ? { text: documentDisplayText } : {}),
+                        ...(success ? {} : { text: `${fullText.trim() ? `${fullText.trim()}\n\n` : ''}The upstream model finished without returning a response. Retry this request or choose another model.` }),
+                        streaming: false,
+                        queued: false,
+                        failed: !success,
+                      }
                     : m,
                 ),
               );
-              setSending(false);
-              buzz(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
+              releaseConversationSend(runtime.conversationId);
+              if (success) buzz(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
             },
             onToolCalls: async (toolCalls) => {
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
               const toolNames = toolCalls.map((t) => t.function.name);
               buzz(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
               setAgentToolRuns((previous) => ({
                 ...previous,
-                [conversationId]: toolNames.map((name) => ({ name, status: 'running', startedAt: Date.now() })),
+                [runtime.conversationId]: toolNames.map((name) => ({ name, status: 'running', startedAt: Date.now() })),
               }));
-              setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'using_tool', tools: Array.from(new Set([...(previous[conversationId]?.tools || []), ...toolNames])) } }));
+              setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'using_tool', tools: Array.from(new Set([...(previous[runtime.conversationId]?.tools || []), ...toolNames])) } }));
               console.log('[MCP] Tool call(s) requested:', toolNames);
               // Visible status while the tool runs — otherwise the bubble just sits blank
               // with no indication the model is looking anything up (unlike the AEC-keyword
@@ -2367,30 +2972,87 @@ export default function SimpleChatScreen() {
                   tool_calls: toolCalls,
                 } as unknown as ChatMessage;
 
-                const toolResultMsgs = await Promise.all(
-                  toolCalls.map(async (tc) => {
-                    let args: Record<string, any> = {};
-                    try {
-                      args = JSON.parse(tc.function.arguments || '{}');
-                    } catch {
-                      // malformed args — call with none rather than failing the whole turn
+                const toolCancellationSignal = Platform.OS === 'ios' ? runtime.controller.signal : undefined;
+                const executeToolCall = async (tc: typeof toolCalls[number]): Promise<ChatMessage | null> => {
+                  if (Platform.OS === 'ios' && turnGenerationRef.current.get(assistantId) !== generation) return null;
+                  let args: Record<string, any> = {};
+                  let argsParseError: string | null = null;
+                  try {
+                    const parsed = JSON.parse(tc.function.arguments || '{}');
+                    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+                      if (Platform.OS === 'ios') argsParseError = 'Tool arguments must be a JSON object.';
+                    } else {
+                      args = parsed;
                     }
-                    const approved = isMcpToolApprovalRequired(tc.function.name)
-                      ? await askMcpToolApproval(tc.function.name)
-                      : false;
-                    const result = tc.function.name === 'daily_note'
-                      ? (approved ? await executeDailyNoteTool(args) : { error: true, code: 'approval_required', message: 'Approval is required before changing a daily note.' })
-                      : await executeMcpToolWithDeadline(tc.function.name, args, token, 45_000, approved);
-                    return {
-                      role: 'tool' as const,
-                      tool_call_id: tc.id,
-                      content: JSON.stringify(result),
-                    } as unknown as ChatMessage;
-                  }),
-                );
+                  } catch (error) {
+                    if (Platform.OS === 'ios') {
+                      argsParseError = error instanceof Error ? `Tool arguments are invalid JSON: ${error.message}` : 'Tool arguments are invalid JSON.';
+                    }
+                  }
+                  const needsApproval = !argsParseError && (tc.function.name === 'daily_note'
+                    ? Platform.OS !== 'ios'
+                    : isMcpToolApprovalRequired(tc.function.name));
+                  const approved = needsApproval ? await askMcpToolApproval(tc.function.name, toolCancellationSignal) : false;
+                  if (Platform.OS === 'ios' && (turnGenerationRef.current.get(assistantId) !== generation || runtime.controller.signal.aborted)) return null;
+                  let result: any;
+                  if (argsParseError) {
+                    result = { error: true, code: 'invalid_arguments', message: argsParseError };
+                  } else if (!approved && needsApproval) {
+                    result = { error: true, code: 'approval_required', message: `Approval is required before using ${tc.function.name}.` };
+                  } else if (tc.function.name === 'daily_note') {
+                    try {
+                      result = await executeDailyNoteTool(args);
+                      if (Platform.OS === 'ios' && (turnGenerationRef.current.get(assistantId) !== generation || runtime.controller.signal.aborted)) return null;
+                      if (Platform.OS === 'ios' && !result?.error && result?.ok) {
+                        const refreshedNotes = await listDailyNotes();
+                        setDailyNotesList(refreshedNotes);
+                        setDailyStreak(computeStreak(refreshedNotes));
+                        const refreshedNote = typeof result.date === 'string'
+                          ? refreshedNotes.find((note) => note.id === result.date)
+                          : undefined;
+                        if (refreshedNote) {
+                          setDailyNote((current) => current?.id === refreshedNote.id ? refreshedNote : current);
+                        }
+                      }
+                    } catch (error) {
+                      result = { error: true, message: error instanceof Error ? error.message : 'Daily note could not be updated.' };
+                    }
+                  } else {
+                    result = await executeMcpToolWithDeadline(tc.function.name, args, token, 45_000, approved, toolCancellationSignal);
+                  }
+                  if (Platform.OS === 'ios' && (turnGenerationRef.current.get(assistantId) !== generation || runtime.controller.signal.aborted)) return null;
+                  return {
+                    role: 'tool' as const,
+                    tool_call_id: tc.id,
+                    content: JSON.stringify(result),
+                  } as unknown as ChatMessage;
+                };
+                const toolResultMsgs: ChatMessage[] = [];
+                if (Platform.OS === 'ios') {
+                  // iOS alerts and modal presentations must not overlap.
+                  for (const tc of toolCalls) {
+                    const result = await executeToolCall(tc);
+                    if (!result) return;
+                    toolResultMsgs.push(result);
+                  }
+                } else {
+                  // Preserve the established APK parallel-tool behavior.
+                  const results = await Promise.all(toolCalls.map(executeToolCall));
+                  if (results.some((result) => !result)) return;
+                  toolResultMsgs.push(...results as ChatMessage[]);
+                }
+                if (Platform.OS === 'ios' && turnGenerationRef.current.get(assistantId) !== generation) return;
                 setAgentToolRuns((previous) => ({
                   ...previous,
-                  [conversationId]: toolNames.map((name) => ({ name, status: 'complete', startedAt: previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now(), durationMs: Date.now() - (previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now()) })),
+                  [runtime.conversationId]: toolNames.map((name, index) => {
+                    const startedAt = previous[runtime.conversationId]?.find((run) => run.name === name)?.startedAt || Date.now();
+                    let failed = false;
+                    try {
+                      const content = toolResultMsgs[index]?.content;
+                      failed = Boolean(JSON.parse(typeof content === 'string' ? content : '{}').error);
+                    } catch { failed = true; }
+                    return { name, status: failed ? 'failed' : 'complete', startedAt, durationMs: Date.now() - startedAt };
+                  }),
                 }));
 
                 // Clear the "Looking that up..." placeholder before the follow-up turn streams
@@ -2408,22 +3070,29 @@ export default function SimpleChatScreen() {
                 console.error('[MCP] Tool execution failed:', err);
                 setAgentToolRuns((previous) => ({
                   ...previous,
-                  [conversationId]: toolNames.map((name) => ({ name, status: 'failed', startedAt: previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now(), durationMs: Date.now() - (previous[conversationId]?.find((run) => run.name === name)?.startedAt || Date.now()) })),
+                  [runtime.conversationId]: toolNames.map((name) => ({ name, status: 'failed', startedAt: previous[runtime.conversationId]?.find((run) => run.name === name)?.startedAt || Date.now(), durationMs: Date.now() - (previous[runtime.conversationId]?.find((run) => run.name === name)?.startedAt || Date.now()) })),
                 }));
                 streamRuntimeRef.current.delete(assistantId);
                 if (runtime.raf != null) cancelAnimationFrame(runtime.raf);
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
-                      ? { ...m, streaming: false, text: fullText || 'Sorry, the knowledge base lookup failed. Please try again.' }
+                      ? {
+                          ...m,
+                          streaming: false,
+                          text: fullText || (Platform.OS === 'ios'
+                            ? 'I could not complete the requested tool action. Please retry.'
+                            : 'Sorry, the knowledge base lookup failed. Please try again.'),
+                        }
                       : m,
                   ),
                 );
-                success = true;
-                setSending(false);
+                success = false;
+                releaseConversationSend(runtime.conversationId);
               }
             },
             onError: (err) => {
+              if (turnGenerationRef.current.get(assistantId) !== generation) return;
               // A provider can close successfully and still surface a delayed
               // reader error when the app changes audio/foreground state. Once
               // any answer text is present, preserve it instead of converting
@@ -2436,7 +3105,7 @@ export default function SimpleChatScreen() {
                 setMessages((prev) => prev.map((m) => m.id === assistantId
                   ? { ...m, streaming: false, queued: false, failed: false }
                   : m));
-                setSending(false);
+                releaseConversationSend(runtime.conversationId);
                 return;
               }
               streamRuntimeRef.current.delete(assistantId);
@@ -2445,8 +3114,8 @@ export default function SimpleChatScreen() {
               if (isAbortError(err)) {
                 // User pressed Stop — keep whatever text streamed in so far,
                 // just mark the bubble settled rather than discarding it.
-                success = true;
-                setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'idle', tools: previous[conversationId]?.tools || [] } }));
+                success = false;
+                setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'idle', tools: previous[runtime.conversationId]?.tools || [] } }));
                 setMessages((prev) =>
                   prev.map((m) => (m.id === assistantId ? { ...m, streaming: false } : m)),
                 );
@@ -2472,7 +3141,7 @@ export default function SimpleChatScreen() {
                 setMessages((prev) => prev.map((m) => m.id === assistantId
                   ? { ...m, streaming: false, queued: false, failed: true }
                   : m));
-                setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'idle', tools: previous[conversationId]?.tools || [] } }));
+                setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'idle', tools: previous[runtime.conversationId]?.tools || [] } }));
                 if (err.type === 'auth') {
                   // The session itself is invalid/expired — a banner alone leaves
                   // the user stuck retrying the same broken session. Sign out and
@@ -2505,8 +3174,8 @@ export default function SimpleChatScreen() {
                     /* reporting must never throw */
                   }
                 }
-                queuedSendsRef.current.set(assistantId, { history, assistantId, attempts });
-                setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: stillTrying ? 'reconnecting' : 'idle', tools: previous[conversationId]?.tools || [] } }));
+                queuedSendsRef.current.set(assistantId, { history, assistantId, attempts, conversationId: runtime.conversationId });
+                setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: stillTrying ? 'reconnecting' : 'idle', tools: previous[runtime.conversationId]?.tools || [] } }));
                 setMessages((prev) =>
                   prev.map((m) =>
                     m.id === assistantId
@@ -2527,50 +3196,230 @@ export default function SimpleChatScreen() {
                     setMessages((prev) => prev.map((m) => m.id === assistantId
                       ? { ...m, streaming: false, queued: false, failed: true, text: 'The connection failed before a response arrived. Tap Retry.' }
                       : m));
-                    setSending(false);
+                    releaseConversationSend(runtime.conversationId);
                     return;
                   }
                   // The legacy live stream has exhausted its bounded retries. Hand
                   // the exact same turn to the durable gateway job path so the
                   // answer can finish after the app is backgrounded or killed.
                   void (async () => {
+                    // Keep the APK's established fallback path unchanged in
+                    // this iOS migration checkout. Its parity handoff tracks
+                    // the separately owned Android follow-up work.
+                    if (Platform.OS !== 'ios') {
+                      try {
+                        const fallbackKey = `fallback-${assistantId}`;
+                        const pushToken = await NotificationsService.getPushToken();
+                        await rememberChatJobIntent({
+                          idempotencyKey: fallbackKey,
+                          model: modelId,
+                          messages: history,
+                          assistantMessageId: assistantId,
+                          conversationId: runtime.conversationId,
+                          pushToken,
+                          createdAt: Date.now(),
+                        }).catch(() => {});
+                        const durable = await createChatJob({
+                          token,
+                          idempotencyKey: fallbackKey,
+                          model: modelId,
+                          messages: history,
+                          conversationId: runtime.conversationId,
+                          pushToken,
+                        });
+                        await rememberChatJob({
+                          jobId: durable.jobId,
+                          assistantMessageId: assistantId,
+                          conversationId: runtime.conversationId,
+                          createdAt: Date.now(),
+                        });
+                        setMessages((previous) => previous.map((message) => message.id === assistantId
+                          ? { ...message, failed: false, queued: true, streaming: false, text: durable.text || '' }
+                          : message));
+                      } catch {
+                        // Preserve the APK's existing manual retry behavior.
+                      }
+                      return;
+                    }
+                    let intentSaved = false;
                     try {
                       const fallbackKey = `fallback-${assistantId}`;
                       const pushToken = await NotificationsService.getPushToken();
+                      if (turnGenerationRef.current.get(assistantId) !== runtime.generation) return;
                       await rememberChatJobIntent({
                         idempotencyKey: fallbackKey,
                         model: modelId,
                         messages: history,
                         assistantMessageId: assistantId,
-                        conversationId,
+                        conversationId: runtime.conversationId,
                         pushToken,
                         createdAt: Date.now(),
-                      }).catch(() => {});
+                      });
+                      intentSaved = true;
+                      if (turnGenerationRef.current.get(assistantId) !== runtime.generation) {
+                        await forgetChatJobIntent(assistantId);
+                        return;
+                      }
                       const durable = await createChatJob({
                         token,
                         idempotencyKey: fallbackKey,
                         model: modelId,
                         messages: history,
-                        conversationId,
+                        conversationId: runtime.conversationId,
                         pushToken,
                       });
+                      if (turnGenerationRef.current.get(assistantId) !== runtime.generation) {
+                        await cancelChatJob(token, durable.jobId).catch(() => {});
+                        await forgetChatJobIntent(assistantId);
+                        return;
+                      }
                       await rememberChatJob({
                         jobId: durable.jobId,
                         assistantMessageId: assistantId,
-                        conversationId,
+                        conversationId: runtime.conversationId,
                         createdAt: Date.now(),
                       });
+                      durableJobIdsRef.current.set(assistantId, { jobId: durable.jobId, conversationId: runtime.conversationId });
+                      setDurableJobStates((previous) => [...previous.filter((job) => job.assistantMessageId !== assistantId), {
+                        jobId: durable.jobId,
+                        assistantMessageId: assistantId,
+                        status: durable.status,
+                        updatedAt: durable.updatedAt,
+                        error: durable.error,
+                        retryable: durable.retryable,
+                        phase: durable.phase,
+                        nextRetryAt: durable.nextRetryAt,
+                        servedModel: durable.servedModel,
+                      }]);
+                      setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: durable.status === 'paused' ? 'paused' : 'connecting', tools: previous[runtime.conversationId]?.tools || [] } }));
                       setMessages((prev) => prev.map((m) => m.id === assistantId
-                        ? { ...m, failed: false, queued: true, streaming: false, text: durable.text || '' }
+                        ? { ...m, servedModel: durable.servedModel ?? m.servedModel, failed: false, queued: true, streaming: false, text: durable.text || '' }
                         : m));
-                    } catch {
-                      // Keep the existing manual Retry UI if the durable handoff
-                      // itself cannot be reached.
+                      const pollControl = { cancelled: false, conversationId: runtime.conversationId };
+                      activeDurablePollsRef.current.set(assistantId, pollControl);
+                      const durableHistory: QueuedSend = { history, assistantId, attempts: 0, conversationId: runtime.conversationId, durable: true, jobId: durable.jobId };
+                      queuedSendsRef.current.set(assistantId, durableHistory);
+                      void (async () => {
+                        let latest = durable;
+                        for (let pollAttempt = 0; pollAttempt < 120; pollAttempt += 1) {
+                          if (pollControl.cancelled) return;
+                          if (latest.status === 'completed' || latest.status === 'failed' || latest.status === 'cancelled' || latest.status === 'dead_letter') break;
+                          await new Promise((resolve) => setTimeout(resolve, pollAttempt < 8 ? 500 : pollAttempt < 30 ? 1000 : 2000));
+                          if (pollControl.cancelled) return;
+                          try { latest = await getChatJob(token, durable.jobId); }
+                          catch { continue; }
+                          if (pollControl.cancelled || turnGenerationRef.current.get(assistantId) !== runtime.generation) return;
+                          setDurableJobStates((previous) => [...previous.filter((job) => job.assistantMessageId !== assistantId), {
+                            jobId: durable.jobId,
+                            assistantMessageId: assistantId,
+                            status: latest.status,
+                            updatedAt: latest.updatedAt,
+                            error: latest.error,
+                            retryable: latest.retryable,
+                            phase: latest.phase,
+                            nextRetryAt: latest.nextRetryAt,
+                            servedModel: latest.servedModel,
+                          }]);
+                          if (latest.text) setMessages((previous) => previous.map((message) => message.id === assistantId
+                            ? { ...message, text: latest.text, servedModel: latest.servedModel ?? message.servedModel, queued: latest.status !== 'completed', failed: false }
+                            : message));
+                        }
+                        if (pollControl.cancelled) return;
+                        if (!['completed', 'failed', 'cancelled', 'dead_letter'].includes(latest.status)) {
+                          activeDurablePollsRef.current.delete(assistantId);
+                          void reconcileDurableJobs();
+                          return;
+                        }
+                        if (latest.status === 'completed' && latest.text.trim()) {
+                          const chats = await listConversations().catch(() => []);
+                          const chat = chats.find((item) => item.id === runtime.conversationId);
+                          if (chat) await saveConversation(chat.id, chat.messages.map((message) => message.id === assistantId
+                            ? { ...message, text: latest.text, servedModel: latest.servedModel ?? message.servedModel }
+                            : message), chat.modelId).catch(() => {});
+                          setMessages((previous) => previous.map((message) => message.id === assistantId
+                            ? { ...message, text: latest.text, servedModel: latest.servedModel ?? message.servedModel, streaming: false, queued: false, failed: false }
+                            : message));
+                          await recordChatJobHistory({ jobId: durable.jobId, conversationId: runtime.conversationId, assistantMessageId: assistantId, status: 'completed', textPreview: latest.text, completedAt: latest.updatedAt });
+                          void NotificationsService.sendSystemNotification({
+                            type: 'response_ready',
+                            title: 'Expert AI response ready',
+                            body: 'Your answer finished while Expert AI was closed.',
+                            data: { type: 'response_ready', conversationId: runtime.conversationId, jobId: durable.jobId },
+                          });
+                          await forgetChatJob(durable.jobId);
+                          await forgetChatJobIntent(assistantId);
+                          queuedSendsRef.current.delete(assistantId);
+                          durableJobIdsRef.current.delete(assistantId);
+                          activeDurablePollsRef.current.delete(assistantId);
+                          setDurableJobStates((previous) => previous.filter((job) => job.assistantMessageId !== assistantId));
+                          setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'idle', tools: previous[runtime.conversationId]?.tools || [] } }));
+                        } else if (latest.status === 'failed' || latest.status === 'cancelled' || latest.status === 'dead_letter' || (latest.status === 'completed' && !latest.text.trim())) {
+                          const message = latest.text || latest.error || 'The upstream model returned no response. Retry this request.';
+                          setMessages((previous) => previous.map((item) => item.id === assistantId
+                            ? { ...item, text: message, streaming: false, queued: false, failed: true }
+                            : item));
+                          const chats = await listConversations().catch(() => []);
+                          const chat = chats.find((item) => item.id === runtime.conversationId);
+                          if (chat) await saveConversation(chat.id, chat.messages.map((item) => item.id === assistantId ? { ...item, text: message } : item), chat.modelId).catch(() => {});
+                          await recordChatJobHistory({
+                            jobId: durable.jobId,
+                            conversationId: runtime.conversationId,
+                            assistantMessageId: assistantId,
+                            status: latest.status === 'completed' ? 'failed' : latest.status,
+                            error: latest.error || (latest.status === 'completed' && !latest.text.trim() ? message : undefined),
+                            completedAt: latest.updatedAt,
+                          });
+                          if (latest.status === 'failed' || latest.status === 'dead_letter') {
+                            void NotificationsService.notifyResponseFailed(runtime.conversationId);
+                          }
+                          if (latest.status === 'failed' && latest.retryable !== false) {
+                            queuedSendsRef.current.set(assistantId, { ...durableHistory, attempts: 1 });
+                          } else if (latest.status === 'completed' && !latest.text.trim()) {
+                            // A terminal empty result cannot be retried through
+                            // the completed job ID. Keep the exact original
+                            // history for an explicit new generation instead.
+                            queuedSendsRef.current.set(assistantId, { history, assistantId, attempts: 0, conversationId: runtime.conversationId });
+                            await forgetChatJob(durable.jobId);
+                            await forgetChatJobIntent(assistantId);
+                          } else {
+                            queuedSendsRef.current.delete(assistantId);
+                            await forgetChatJob(durable.jobId);
+                            await forgetChatJobIntent(assistantId);
+                          }
+                          durableJobIdsRef.current.delete(assistantId);
+                          activeDurablePollsRef.current.delete(assistantId);
+                          setDurableJobStates((previous) => previous.filter((job) => job.assistantMessageId !== assistantId));
+                          setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'idle', tools: previous[runtime.conversationId]?.tools || [] } }));
+                        }
+                      })().catch((error) => console.warn('[Chat] Fallback job polling failed; it will reconcile on foreground.', error));
+                    } catch (fallbackError) {
+                      if (turnGenerationRef.current.get(assistantId) !== runtime.generation) return;
+                      if (fallbackError instanceof ChatJobRequestError && fallbackError.status >= 400 && fallbackError.status < 500) {
+                        await forgetChatJobIntent(assistantId).catch(() => {});
+                        queuedSendsRef.current.delete(assistantId);
+                        setMessages((previous) => previous.map((message) => message.id === assistantId
+                          ? { ...message, text: fallbackError.message || 'The Gateway rejected this background retry. Tap Retry to try again.', streaming: false, queued: false, failed: true }
+                          : message));
+                      } else if (intentSaved) {
+                        // The create response may have been lost after Gateway
+                        // acceptance. Reconcile the persisted idempotency key
+                        // instead of sending another generation.
+                        queuedSendsRef.current.delete(assistantId);
+                        setMessages((previous) => previous.map((message) => message.id === assistantId
+                          ? { ...message, text: 'Checking whether the Gateway accepted this response…', streaming: false, queued: true, failed: false }
+                          : message));
+                        void reconcileDurableJobs();
+                      } else {
+                        queuedSendsRef.current.delete(assistantId);
+                        setMessages((previous) => previous.map((message) => message.id === assistantId
+                          ? { ...message, text: 'Could not safely start background recovery. Tap Retry to send again.', streaming: false, queued: false, failed: true }
+                          : message));
+                      }
                     }
                   })();
                 }
               }
-              setSending(false);
+              releaseConversationSend(runtime.conversationId);
             },
           },
         );
@@ -2580,7 +3429,7 @@ export default function SimpleChatScreen() {
       requestAnimationFrame(() => listRef.current?.scrollToEnd({ animated: true }));
       return { success, text: fullText };
     },
-    [token, modelId, conversationId, flushPending, persistStreamFinal],
+    [token, modelId, conversationId, flushPending, persistStreamFinal, nextTurnGeneration, releaseConversationSend, reconcileDurableJobs, aiDisclosureAccepted],
   );
 
   // Core send path, takes an explicit string so it can be driven by the composer,
@@ -2678,59 +3527,199 @@ export default function SimpleChatScreen() {
     assistantId: string,
     attempt = 0,
     existingJobId?: string,
+    generation = nextTurnGeneration(assistantId),
+    targetConversationId = conversationId,
+    scheduledTaskId?: string,
   ): Promise<{ success: boolean; text: string }> => {
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+      setShowAiDisclaimer(true);
+      pendingTurnsRef.current.delete(assistantId);
+      releaseConversationSend(targetConversationId);
+      setMessages((previous) => previous.map((message) => message.id === assistantId
+        ? { ...message, streaming: false, queued: false, failed: true, text: 'Agree to the AI data disclosure, then retry this request.' }
+        : message));
+      return { success: false, text: 'Agree to the AI data disclosure before sending content.' };
+    }
     if (!session) return { success: false, text: '' };
     const token = getActiveToken(session);
-    if (!token) return { success: false, text: '' };
+    if (!token) {
+      pendingTurnsRef.current.delete(assistantId);
+      releaseConversationSend(targetConversationId);
+      return { success: false, text: '' };
+    }
 
     // The assistant id is stable across retries and app restarts, making this
     // request idempotent at the gateway and preventing duplicate generations.
     const idempotencyKey = `turn-${assistantId}-${attempt}`;
+    const scheduledTask = scheduledTaskId
+      ? useScheduledTasksStore.getState().tasks.find((task) => task.id === scheduledTaskId)
+      : undefined;
     const pushToken = existingJobId ? undefined : await NotificationsService.getPushToken();
-    if (!existingJobId) {
-      await rememberChatJobIntent({
-        idempotencyKey,
-        model: modelId,
-        messages: history,
-        assistantMessageId: assistantId,
-        conversationId,
-        pushToken,
-        createdAt: Date.now(),
-      }).catch(() => {});
+    if (turnGenerationRef.current.get(assistantId) !== generation) {
+      pendingTurnsRef.current.delete(assistantId);
+      return { success: false, text: '' };
     }
-    const durable = existingJobId
-      ? await retryChatJob(token, existingJobId)
-      : await createChatJob({ token, idempotencyKey, model: modelId, messages: history, conversationId, pushToken });
-    await rememberChatJob({
+    if (!existingJobId) {
+      try {
+        await rememberChatJobIntent({
+          idempotencyKey,
+          model: modelId,
+          messages: history,
+          assistantMessageId: assistantId,
+          conversationId: targetConversationId,
+          ...(scheduledTaskId ? {
+            scheduledTaskId,
+            scheduledFor: scheduledTask?.scheduledFor ?? Date.now(),
+          } : {}),
+          pushToken,
+          createdAt: Date.now(),
+        });
+      } catch (error) {
+        throw new ChatJobIntentPersistenceError(error);
+      }
+    }
+    if (turnGenerationRef.current.get(assistantId) !== generation) {
+      await forgetChatJobIntent(assistantId).catch(() => {});
+      pendingTurnsRef.current.delete(assistantId);
+      return { success: false, text: '' };
+    }
+    if (scheduledTaskId && Platform.OS === 'ios') {
+      try {
+        await useScheduledTasksStore.getState().markSubmissionPending(scheduledTaskId, {
+          conversationId: targetConversationId,
+          assistantMessageId: assistantId,
+        });
+      } catch (error) {
+        await forgetChatJobIntent(assistantId).catch(() => {});
+        throw new ChatJobIntentPersistenceError(error);
+      }
+      if (turnGenerationRef.current.get(assistantId) !== generation) {
+        await forgetChatJobIntent(assistantId).catch(() => {});
+        await useScheduledTasksStore.getState().clearSubmissionPending(scheduledTaskId).catch(() => {});
+        pendingTurnsRef.current.delete(assistantId);
+        return { success: false, text: '' };
+      }
+    }
+    let durable;
+    try {
+      durable = existingJobId
+        ? await retryChatJob(token, existingJobId)
+        : await createChatJob({ token, idempotencyKey, model: modelId, messages: history, conversationId: targetConversationId, pushToken });
+    } catch (error) {
+      if (!existingJobId && error instanceof ChatJobRequestError && error.status >= 400 && error.status < 500) {
+        await forgetChatJobIntent(assistantId).catch(() => {});
+      }
+      throw error;
+    }
+    if (turnGenerationRef.current.get(assistantId) !== generation) {
+      const cancelled = await cancelChatJob(token, durable.jobId).catch(() => null);
+      if (cancelled?.status === 'cancelled') {
+        await forgetChatJob(durable.jobId).catch(() => {});
+        await forgetChatJobIntent(assistantId).catch(() => {});
+        if (scheduledTaskId && Platform.OS === 'ios') {
+          await useScheduledTasksStore.getState().clearSubmissionPending(scheduledTaskId).catch(() => {});
+        }
+      } else {
+        // Stop raced the create response. If the Gateway did not confirm
+        // cancellation, retain the idempotent intent so reconciliation can
+        // attach the accepted work instead of silently orphaning it.
+        await rememberChatJob({
+          jobId: durable.jobId,
+          assistantMessageId: assistantId,
+          conversationId: targetConversationId,
+          ...(scheduledTaskId ? {
+            scheduledTaskId,
+            scheduledFor: scheduledTask?.scheduledFor ?? Date.now(),
+          } : {}),
+          createdAt: Date.now(),
+        }).catch(() => {});
+        void reconcileDurableJobs().catch(() => {});
+      }
+      pendingTurnsRef.current.delete(assistantId);
+      return { success: false, text: '' };
+    }
+    pendingTurnsRef.current.delete(assistantId);
+    durableJobIdsRef.current.set(assistantId, { jobId: durable.jobId, conversationId: targetConversationId });
+    try {
+      await rememberChatJob({
+        jobId: durable.jobId,
+        assistantMessageId: assistantId,
+        conversationId: targetConversationId,
+        ...(scheduledTaskId ? {
+          scheduledTaskId,
+          scheduledFor: scheduledTask?.scheduledFor ?? Date.now(),
+        } : {}),
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      console.warn('[Chat] Gateway accepted a durable job; local association will recover from the saved idempotency intent.', error);
+      Alert.alert('Task is running; local recovery needs repair', 'The Gateway accepted this task. Its original idempotency record is still saved, so Expert AI can reconnect to the same job. Keep the app open while it checks the result.');
+    }
+    if (scheduledTaskId && Platform.OS === 'ios') {
+      // A task launched from the local reminder must stay linked to its durable
+      // Gateway run. Otherwise the foreground stream can return while the
+      // fallback job is queued, and the task is incorrectly marked failed.
+      try {
+        await useScheduledTasksStore.getState().replaceRemoteTask(scheduledTaskId, Date.now(), {
+          jobId: durable.jobId,
+          conversationId: targetConversationId,
+          assistantMessageId: assistantId,
+        });
+      } catch (error) {
+        console.warn('[Tasks] Gateway accepted the task run; local association will recover from its saved intent.', error);
+        void reconcileDurableJobs().catch(() => {});
+      }
+    }
+    setDurableJobStates((previous) => [...previous.filter((job) => job.assistantMessageId !== assistantId), {
       jobId: durable.jobId,
       assistantMessageId: assistantId,
-      conversationId,
-      createdAt: Date.now(),
-    });
-    durableJobIdsRef.current.set(assistantId, { jobId: durable.jobId, conversationId });
-    setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: durable.status === 'paused' ? 'paused' : 'connecting', tools: previous[conversationId]?.tools || [] } }));
-    setDurableJobsActive((count) => count + 1);
+      status: durable.status,
+      updatedAt: durable.updatedAt,
+      error: durable.error,
+      retryable: durable.retryable,
+      phase: durable.phase,
+      nextRetryAt: durable.nextRetryAt,
+      servedModel: durable.servedModel,
+    }]);
+    setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: durable.status === 'paused' ? 'paused' : 'connecting', tools: previous[targetConversationId]?.tools || [] } }));
     setMessages((prev) => prev.map((message) => message.id === assistantId
       ? { ...message, servedModel: durable.servedModel ?? message.servedModel, streaming: false, queued: true, failed: false, text: durable.text || '' }
       : message));
     // The job is now owned by the gateway. Release the composer immediately
     // so another conversation can be started while this one runs.
-    setSending(false);
+    releaseConversationSend(targetConversationId);
+    const pollControl = { cancelled: false, conversationId: targetConversationId };
+    activeDurablePollsRef.current.set(assistantId, pollControl);
 
     let latest = durable;
     let lastRenderedText = durable.text || '';
     // Polling is deliberately bounded per foreground attempt. The durable job
     // remains on the server and is reconciled again on foreground/relaunch.
     for (let attempt = 0; attempt < 120; attempt += 1) {
+      if (pollControl.cancelled || turnGenerationRef.current.get(assistantId) !== generation) return { success: false, text: lastRenderedText };
       if (latest.status === 'completed' || latest.status === 'failed' || latest.status === 'cancelled' || latest.status === 'dead_letter') break;
       const pollDelay = attempt < 8 ? 500 : attempt < 30 ? 1000 : 2000;
       await new Promise((resolve) => setTimeout(resolve, pollDelay));
       try {
         latest = await getChatJob(token, durable.jobId);
       } catch {
-        setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'reconnecting', tools: previous[conversationId]?.tools || [] } }));
+        setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'reconnecting', tools: previous[targetConversationId]?.tools || [] } }));
         continue;
       }
+      if (pollControl.cancelled || turnGenerationRef.current.get(assistantId) !== generation) {
+        return { success: false, text: lastRenderedText };
+      }
+      setDurableJobStates((previous) => [...previous.filter((job) => job.assistantMessageId !== assistantId), {
+        jobId: latest.jobId,
+        assistantMessageId: assistantId,
+        status: latest.status,
+        updatedAt: latest.updatedAt,
+        error: latest.error,
+        retryable: latest.retryable,
+        phase: latest.phase,
+        nextRetryAt: latest.nextRetryAt,
+        servedModel: latest.servedModel,
+      }]);
       const durablePhase = latest.phase === 'using_tool'
         ? 'using_tool'
         : latest.phase === 'synthesizing'
@@ -2744,7 +3733,7 @@ export default function SimpleChatScreen() {
           : latest.status === 'running'
             ? 'synthesizing'
             : 'idle';
-      setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: durablePhase, tools: previous[conversationId]?.tools || [] } }));
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: durablePhase, tools: previous[targetConversationId]?.tools || [] } }));
       if (latest.text && latest.text !== lastRenderedText) {
         lastRenderedText = latest.text;
         setMessages((prev) => prev.map((message) => message.id === assistantId
@@ -2753,17 +3742,76 @@ export default function SimpleChatScreen() {
       }
     }
 
-    if (latest.status === 'completed') {
+    if (latest.status === 'completed' && !latest.text.trim()) {
+      const emptyError = latest.error || 'The Gateway completed this request without returning any text. Start a fresh run.';
+      const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === durable.jobId);
+      if (scheduled) {
+        await markScheduledTaskRunSafely(scheduled.id, 'exhausted', emptyError);
+        void NotificationsService.notifyTaskFailed(scheduled.prompt, emptyError, scheduled.id, targetConversationId);
+      } else {
+        queuedSendsRef.current.set(assistantId, { history, assistantId, attempts: 0, conversationId: targetConversationId });
+      }
+      // An empty terminal result is a failed user task even if the Gateway's
+      // transport status is completed. Keep one accurate, deduplicated history row.
+      await recordChatJobHistory({ jobId: durable.jobId, conversationId: targetConversationId, assistantMessageId: assistantId, status: 'failed', error: emptyError, completedAt: latest.updatedAt });
+      const savedConversations = await listConversations().catch(() => []);
+      const savedConversation = savedConversations.find((item) => item.id === targetConversationId);
+      if (savedConversation?.messages.some((message) => message.id === assistantId)) {
+        await saveConversation(savedConversation.id, savedConversation.messages.map((message) => message.id === assistantId
+          ? { ...message, text: emptyError }
+          : message), savedConversation.modelId).catch(() => {});
+      }
+      activeDurablePollsRef.current.delete(assistantId);
       await forgetChatJob(durable.jobId);
+      await forgetChatJobIntent(assistantId);
       durableJobIdsRef.current.delete(assistantId);
-      setDurableJobsActive((count) => Math.max(0, count - 1));
+      setDurableJobStates((previous) => previous.filter((job) => job.assistantMessageId !== assistantId));
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, text: emptyError, streaming: false, queued: false, failed: true }
+        : message));
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'idle', tools: previous[targetConversationId]?.tools || [] } }));
+      return { success: false, text: emptyError };
+    }
+
+    if (latest.status === 'completed') {
+      const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === durable.jobId);
+      if (scheduled) await markScheduledTaskRunSafely(scheduled.id, 'completed', latest.text.slice(0, 160));
+      await recordChatJobHistory({ jobId: durable.jobId, conversationId: targetConversationId, assistantMessageId: assistantId, status: 'completed', textPreview: latest.text, completedAt: latest.updatedAt });
+      const savedConversations = await listConversations().catch(() => []);
+      const savedConversation = savedConversations.find((item) => item.id === targetConversationId);
+      if (savedConversation?.messages.some((message) => message.id === assistantId)) {
+        await saveConversation(savedConversation.id, savedConversation.messages.map((message) => message.id === assistantId
+          ? { ...message, text: latest.text, servedModel: latest.servedModel ?? message.servedModel }
+          : message), savedConversation.modelId).catch(() => {});
+      }
+      activeDurablePollsRef.current.delete(assistantId);
+      await forgetChatJob(durable.jobId);
+      await forgetChatJobIntent(assistantId);
+      durableJobIdsRef.current.delete(assistantId);
+      setDurableJobStates((previous) => previous.filter((job) => job.assistantMessageId !== assistantId));
       setMessages((prev) => prev.map((message) => message.id === assistantId
         ? { ...message, text: latest.text, servedModel: latest.servedModel ?? message.servedModel, streaming: false, queued: false, failed: false }
         : message));
-      setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'idle', tools: [] } }));
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'idle', tools: [] } }));
       return { success: true, text: latest.text };
     }
     if (latest.status === 'failed' || latest.status === 'cancelled' || latest.status === 'dead_letter') {
+      const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === durable.jobId);
+      if (scheduled && (latest.status === 'failed' || latest.status === 'dead_letter')) {
+        const cannotRetry = latest.status === 'dead_letter' || latest.retryable === false;
+        await markScheduledTaskRunSafely(scheduled.id, cannotRetry ? 'exhausted' : 'failed', latest.error || 'The upstream model returned no response.');
+        void NotificationsService.notifyTaskFailed(scheduled.prompt, latest.error || undefined, scheduled.id, targetConversationId);
+      }
+      await recordChatJobHistory({ jobId: durable.jobId, conversationId: targetConversationId, assistantMessageId: assistantId, status: latest.status, textPreview: latest.text, error: latest.error, completedAt: latest.updatedAt });
+      const savedConversations = await listConversations().catch(() => []);
+      const savedConversation = savedConversations.find((item) => item.id === targetConversationId);
+      if (savedConversation?.messages.some((message) => message.id === assistantId)) {
+        const failureText = latest.text || latest.error || 'The upstream model returned no response.';
+        await saveConversation(savedConversation.id, savedConversation.messages.map((message) => message.id === assistantId
+          ? { ...message, text: failureText }
+          : message), savedConversation.modelId).catch(() => {});
+      }
+      activeDurablePollsRef.current.delete(assistantId);
       if (latest.status === 'failed') {
         try {
           Sentry.captureException(new Error(latest.error || 'Durable chat job failed'), {
@@ -2775,22 +3823,42 @@ export default function SimpleChatScreen() {
         }
       }
       durableJobIdsRef.current.delete(assistantId);
-      setDurableJobsActive((count) => Math.max(0, count - 1));
       if (latest.status === 'failed' && latest.retryable !== false) {
-        queuedSendsRef.current.set(assistantId, { history, assistantId, attempts: attempt + 1, durable: true, jobId: durable.jobId });
+        queuedSendsRef.current.set(assistantId, { history, assistantId, attempts: attempt + 1, conversationId: targetConversationId, durable: true, jobId: durable.jobId });
+      } else {
+        queuedSendsRef.current.delete(assistantId);
       }
+      setDurableJobStates((previous) => previous.filter((job) => job.assistantMessageId !== assistantId));
       setMessages((prev) => prev.map((message) => message.id === assistantId
-        ? { ...message, text: latest.text || latest.error || (latest.status === 'dead_letter' ? 'This request needs a fresh retry.' : ''), streaming: false, queued: false, failed: true }
+        ? { ...message, text: latest.text || latest.error || (latest.status === 'dead_letter' ? 'This request exhausted its retry budget.' : 'The upstream model returned no response. Retry this task or choose another model.'), streaming: false, queued: false, failed: true }
         : message));
-      setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: 'idle', tools: [] } }));
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'idle', tools: [] } }));
+    }
+    if (Platform.OS === 'ios' && ['queued', 'running', 'paused'].includes(latest.status)) {
+      // The foreground poll budget ended, but the Gateway still owns the job.
+      // Drop the completed polling handle; keep the durable association and
+      // queued UI so Stop/Pause still target the real job and app-foreground
+      // reconciliation can resume observation later.
+      activeDurablePollsRef.current.delete(assistantId);
+      setAgentActivity((previous) => ({ ...previous, [targetConversationId]: {
+        phase: latest.status === 'paused' ? 'paused' : 'reconnecting',
+        tools: previous[targetConversationId]?.tools || [],
+      } }));
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, ...(latest.text ? { text: latest.text } : {}), streaming: false, queued: true, failed: false }
+        : message));
     }
     return { success: false, text: latest.text || '' };
-  }, [session, modelId, conversationId]);
+  }, [session, modelId, conversationId, nextTurnGeneration, releaseConversationSend, markScheduledTaskRunSafely, reconcileDurableJobs, aiDisclosureAccepted]);
 
   const sendText = useCallback(async (raw: string) => {
     const text = raw.trim();
     const imageToSend = pendingImage;
-    const currentConversationBusy = sending && sendingConversationRef.current === conversationId;
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+      setShowAiDisclaimer(true);
+      return;
+    }
+    const currentConversationBusy = sendingConversationRef.current === conversationId;
     if ((!text && !imageToSend) || currentConversationBusy) return;
 
     // Sign-in is mandatory — no anonymous/community chat. Surface the sign-in sheet instead of
@@ -2799,6 +3867,7 @@ export default function SimpleChatScreen() {
       setSignInOpen(true);
       return;
     }
+
 
     const currentMessages = messagesRef.current;
     const baseMessages = editingMessageId
@@ -2810,8 +3879,6 @@ export default function SimpleChatScreen() {
     setError(null);
     setInput('');
     setDraft(conversationId, '').catch(() => {});
-    sendingConversationRef.current = conversationId;
-    setSending(true);
     buzz(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
 
     const userMsg: DisplayMessage = {
@@ -2820,30 +3887,22 @@ export default function SimpleChatScreen() {
       text: text || '📷 Image attached',
     };
     const assistantId = makeId();
-    const contextMatch = text.match(/^\/recent\s+(\d+)\b/i);
+    const turnGeneration = nextTurnGeneration(assistantId);
+    sendingConversationRef.current = conversationId;
+    pendingTurnsRef.current.set(assistantId, { conversationId, generation: turnGeneration });
+    setSending(true);
+    // Gateway-owned slash commands must reach the gateway with the full chat
+    // history on iOS. Keep the APK's existing local context controls intact.
+    const contextMatch = Platform.OS === 'android' ? text.match(/^\/recent\s+(\d+)\b/i) : null;
     const requestedRecent = contextMatch ? Math.max(1, Math.min(20, Number(contextMatch[1]) || 6)) : null;
-    const scopedMessages = /^\/fresh\b/i.test(text)
+    const scopedMessages = Platform.OS === 'android' && /^\/fresh\b/i.test(text)
       ? [userMsg]
       : requestedRecent
         ? [...baseMessages.slice(-(requestedRecent * 2)), userMsg]
         : [...baseMessages, userMsg];
-    const history = await buildHistoryForSend(
-      conversationId,
-      buildSystemContextMessage(currentStyleOpts(text)),
-      scopedMessages,
-      session,
-      modelId,
-    );
-
-    // buildHistoryForSend always maps the last input message to the last
-    // output ChatMessage 1:1 (verified in lib/compaction.ts) — safe to swap
-    // its content for the multimodal parts here, after compaction/summary
-    // logic has already run on the plain-text version.
-    if (imageToSend) {
-      const last = history[history.length - 1];
-      if (last && last.role === 'user') last.content = imageToSend.contentParts;
-    }
-
+    // Put the accepted turn on screen before compaction or token lookup yields.
+    // Stop/new-chat can now leave a truthful, recoverable transcript even when
+    // the user cancels during setup.
     setMessages((currentMessages) => {
       const currentBaseMessages = editingMessageId
         ? currentMessages.slice(0, Math.max(0, currentMessages.findIndex((m) => m.id === editingMessageId)))
@@ -2854,21 +3913,49 @@ export default function SimpleChatScreen() {
         { id: assistantId, role: 'assistant', text: '', streaming: true },
       ];
     });
+    let history: ChatMessage[];
+    try {
+      history = await buildHistoryForSend(
+        conversationId,
+        buildSystemContextMessage(currentStyleOpts(text)),
+        scopedMessages,
+        session,
+        modelId,
+      );
+    } catch (historyError) {
+      pendingTurnsRef.current.delete(assistantId);
+      if (turnGenerationRef.current.get(assistantId) === turnGeneration) {
+        releaseConversationSend(conversationId);
+        setError({ message: historyError instanceof Error ? historyError.message : 'Could not prepare this message. Try again.' });
+        setMessages((prev) => prev.map((message) => message.id === assistantId
+          ? { ...message, text: 'Could not prepare this message. Retry it when ready.', streaming: false, queued: false, failed: true }
+          : message));
+      }
+      return;
+    }
+
+    if (turnGenerationRef.current.get(assistantId) !== turnGeneration) {
+      pendingTurnsRef.current.delete(assistantId);
+      return;
+    }
+
+    // buildHistoryForSend always maps the last input message to the last
+    // output ChatMessage 1:1 (verified in lib/compaction.ts) — safe to swap
+    // its content for the multimodal parts here, after compaction/summary
+    // logic has already run on the plain-text version.
+    if (imageToSend) {
+      const last = history[history.length - 1];
+      if (last && last.role === 'user') last.content = imageToSend.contentParts;
+    }
 
     maybeUpdateMemoryFromMessage(text, baseMessages);
-    // Ordinary chat stays on the foreground stream. Durable jobs are an
-    // explicit agentic/scheduled-work primitive, not the default transport for
-    // greetings, questions, or ordinary image turns.
-    const useDurable = /^(?:\/task|\/research)\b/i.test(text.trim());
-    if (useDurable) {
+    if (Platform.OS === 'android' && /^(?:\/task|\/research)\b/i.test(text.trim())) {
       try {
-        await runDurableCompletion(history, assistantId);
+        await runDurableCompletion(history, assistantId, 0, undefined, turnGeneration);
         return;
       } catch (error) {
-        // Job creation may fail while offline or during a gateway rollout. In
-        // that case retain the existing resilient stream/retry behavior.
         if (error instanceof ChatJobRequestError && error.status === 413) {
-          setSending(false);
+          releaseConversationSend(conversationId);
           setError({ message: error.message, notCharged: true });
           setMessages((prev) => prev.map((message) => message.id === assistantId
             ? { ...message, streaming: false, queued: false, failed: true }
@@ -2877,8 +3964,8 @@ export default function SimpleChatScreen() {
         }
       }
     }
-    await runCompletion(history, assistantId);
-  }, [sending, messages, runCompletion, runDurableCompletion, session, conversationId, modelId, maybeUpdateMemoryFromMessage, editingMessageId, pendingImage]);
+    await runCompletion(history, assistantId, turnGeneration);
+  }, [runCompletion, runDurableCompletion, session, conversationId, modelId, maybeUpdateMemoryFromMessage, editingMessageId, pendingImage, releaseConversationSend, nextTurnGeneration, aiDisclosureAccepted]);
 
   const handleSend = useCallback(() => {
     sendText(input);
@@ -2891,17 +3978,25 @@ export default function SimpleChatScreen() {
   // Re-run a held send from its exact stored history. Called by the backoff timer,
   // the "Retry now" button, and on app-foreground.
   const flushQueuedSend = useCallback(async (assistantId?: string) => {
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+      setShowAiDisclaimer(true);
+      return;
+    }
     const q = assistantId
       ? queuedSendsRef.current.get(assistantId)
-      : queuedSendsRef.current.values().next().value as QueuedSend | undefined;
+      : [...queuedSendsRef.current.values()].find((queued) => !queued.manualHold);
     if (!q) {
       void reconcileDurableJobs();
       return;
     }
+    if (q.manualHold) return;
     if (sendingRef.current) return;
     const timer = retryTimersRef.current.get(q.assistantId);
     if (timer) { clearTimeout(timer); retryTimersRef.current.delete(q.assistantId); }
     setError(null);
+    const generation = nextTurnGeneration(q.assistantId);
+    sendingConversationRef.current = q.conversationId;
+    pendingTurnsRef.current.set(q.assistantId, { conversationId: q.conversationId, generation });
     setSending(true);
     setMessages((prev) =>
       prev.map((m) =>
@@ -2910,7 +4005,7 @@ export default function SimpleChatScreen() {
     );
     if (q.durable) {
       try {
-        const result = await runDurableCompletion(q.history, q.assistantId, q.attempts, q.jobId);
+        const result = await runDurableCompletion(q.history, q.assistantId, q.attempts, q.jobId, generation, q.conversationId);
         if (result.success) queuedSendsRef.current.delete(q.assistantId);
         return;
       } catch (retryError) {
@@ -2920,7 +4015,7 @@ export default function SimpleChatScreen() {
         // the source of truth to avoid duplicate generations.
         if (retryError instanceof ChatJobRequestError && retryError.status === 404) {
           try {
-            const replacement = await runDurableCompletion(q.history, q.assistantId, q.attempts + 1);
+            const replacement = await runDurableCompletion(q.history, q.assistantId, q.attempts + 1, undefined, generation, q.conversationId);
             if (replacement.success) queuedSendsRef.current.delete(q.assistantId);
             return;
           } catch {
@@ -2930,7 +4025,8 @@ export default function SimpleChatScreen() {
         // Do not fall back to a second live generation here: the durable job
         // may still be running if this request timed out after reaching the
         // gateway. Keep one authoritative job and retry its status operation.
-        setSending(false);
+        pendingTurnsRef.current.delete(q.assistantId);
+        releaseConversationSend(q.conversationId);
         setMessages((prev) => prev.map((message) => message.id === q.assistantId
           ? { ...message, streaming: false, queued: true, failed: false }
           : message));
@@ -2943,22 +4039,78 @@ export default function SimpleChatScreen() {
         return;
       }
     }
-    await runCompletion(q.history, q.assistantId);
-  }, [runCompletion, runDurableCompletion, reconcileDurableJobs]);
+    const result = await runCompletion(q.history, q.assistantId, generation, q.conversationId);
+    if (result.success) {
+      queuedSendsRef.current.delete(q.assistantId);
+      const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.assistantMessageId === q.assistantId);
+      if (scheduled) {
+        await markScheduledTaskRunSafely(scheduled.id, 'completed', result.text.slice(0, 160), {
+          conversationId: q.conversationId,
+          assistantMessageId: q.assistantId,
+        });
+      }
+    }
+  }, [runCompletion, runDurableCompletion, reconcileDurableJobs, nextTurnGeneration, releaseConversationSend, markScheduledTaskRunSafely, aiDisclosureAccepted]);
 
   useEffect(() => {
     flushQueuedSendRef.current = flushQueuedSend;
   }, [flushQueuedSend]);
 
   useEffect(() => {
-    if (!hasShareIntent) return;
-    const incoming = (shareIntent.text || shareIntent.webUrl || '').trim();
-    if (incoming) {
-      setInput((prev) => (prev.trim() ? `${prev}\n\n${incoming}` : incoming));
-      setTimeout(() => inputRef.current?.focus(), 250);
+    if (Platform.OS === 'ios' && aiDisclosureAccepted && queuedSendsRef.current.size > 0 && !sendingRef.current) {
+      flushQueuedSendRef.current?.();
     }
+  }, [aiDisclosureAccepted]);
+
+  useEffect(() => {
+    if (!hasShareIntent) return;
+    const incomingText = [shareIntent.text, shareIntent.webUrl]
+      .filter((value): value is string => typeof value === 'string' && !!value.trim())
+      .join('\n');
+    const sharedFiles = Array.isArray(shareIntent.files) ? shareIntent.files : [];
     resetShareIntent();
-  }, [hasShareIntent, shareIntent, resetShareIntent]);
+    void (async () => {
+      const image = sharedFiles.find((file) => file.mimeType?.startsWith('image/'));
+      const textFiles = sharedFiles.filter((file) => {
+        const name = file.fileName.toLowerCase();
+        return file.mimeType?.startsWith('text/') || /\.(txt|md|markdown|csv|json)$/i.test(name);
+      });
+      const fileText: string[] = [];
+      for (const file of textFiles.slice(0, 3)) {
+        if (!file.path || (file.size != null && file.size > 1_000_000)) continue;
+        try {
+          fileText.push(`Shared file: ${file.fileName}\n\n${await FileSystem.readAsStringAsync(file.path)}`);
+        } catch {
+          fileText.push(`Shared file: ${file.fileName} (could not read this file on the device)`);
+        }
+      }
+      const incoming = [incomingText, ...fileText].filter(Boolean).join('\n\n').trim();
+      if (incoming) setInput((prev) => (prev.trim() ? `${prev}\n\n${incoming}` : incoming));
+      if (image?.path) {
+        try {
+          const picked: PickedImage = { uri: image.path, analysis: await analyzeImageOnDevice(image.path) };
+          Alert.alert('Image shared with Expert AI', 'Image analysis runs on this iPhone. Choose whether to add the extracted text or send the image to the model.', [
+            { text: 'Cancel', style: 'cancel' },
+            { text: 'Add extracted text', onPress: () => setInput((prev) => [prev.trim(), describeAnalysis(picked.analysis)].filter(Boolean).join('\n\n')) },
+            ...(tier !== 'community' ? [{ text: 'Send image to model', onPress: async () => {
+              try {
+                const contentParts = await buildImageContentParts(picked, incoming);
+                setPendingImage({ contentParts });
+                setInput((prev) => (prev.trim() ? prev : incoming || `Please analyze the shared image (${image.fileName}).`));
+              } catch {
+                Alert.alert('Could not prepare image', 'Please try sharing the image again.');
+              }
+            } }] : []),
+          ]);
+        } catch {
+          Alert.alert('Could not read shared image', 'Expert AI could not prepare this image on the iPhone.');
+        }
+      } else if (sharedFiles.length > textFiles.length) {
+        Alert.alert('Some shared files were not added', 'This chat can accept text files and images. Other shared file types are not supported yet.');
+      }
+      if (incoming || image) setTimeout(() => inputRef.current?.focus(), 250);
+    })();
+  }, [hasShareIntent, shareIntent, resetShareIntent, tier]);
 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (s) => {
@@ -3068,51 +4220,156 @@ export default function SimpleChatScreen() {
   }, [session]);
 
   useEffect(() => {
+    const retryTimers = retryTimersRef.current;
     return () => {
-      for (const timer of retryTimersRef.current.values()) clearTimeout(timer);
-      retryTimersRef.current.clear();
+      for (const timer of retryTimers.values()) clearTimeout(timer);
+      retryTimers.clear();
     };
   }, []);
 
   const handleStop = useCallback(() => {
-    for (const runtime of streamRuntimeRef.current.values()) {
-      if (runtime.conversationId === conversationId) runtime.controller.abort();
-    }
+    const targetConversationId = conversationId;
     const token = session ? getActiveToken(session) : null;
-    if (!token) return;
-    for (const [assistantId, job] of durableJobIdsRef.current) {
-      if (job.conversationId !== conversationId) continue;
-      void cancelChatJob(token, job.jobId).then(() => {
-        durableJobIdsRef.current.delete(assistantId);
-        setDurableJobsActive((count) => Math.max(0, count - 1));
-        setMessages((prev) => prev.map((message) => message.id === assistantId
-          ? { ...message, streaming: false, queued: false, failed: false }
-          : message));
-      }).catch(() => {
-        // Cancellation is best-effort while offline; reconciliation will still
-        // recover the job and the user can retry it when back online.
-      });
+    for (const [assistantId, pending] of pendingTurnsRef.current) {
+      if (pending.conversationId !== targetConversationId) continue;
+      nextTurnGeneration(assistantId);
+      pendingTurnsRef.current.delete(assistantId);
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? Platform.OS === 'ios'
+          ? {
+              ...message,
+              text: message.text || 'Stopped before the request reached the Gateway. Tap Retry to send it again.',
+              streaming: false,
+              queued: false,
+              failed: true,
+            }
+          : { ...message, streaming: false, queued: false, failed: false }
+        : message));
     }
-  }, [session, conversationId]);
+    for (const runtime of streamRuntimeRef.current.values()) {
+      if (runtime.conversationId !== targetConversationId) continue;
+      turnGenerationRef.current.set(runtime.assistantId, runtime.generation + 1);
+      runtime.controller.abort();
+      if (runtime.raf != null) cancelAnimationFrame(runtime.raf);
+      runtime.pendingText = '';
+      streamRuntimeRef.current.delete(runtime.assistantId);
+      setMessages((prev) => prev.map((message) => message.id === runtime.assistantId
+        ? { ...message, streaming: false, queued: false, failed: false }
+        : message));
+    }
+    for (const [assistantId, job] of durableJobIdsRef.current) {
+      if (job.conversationId !== targetConversationId) continue;
+      if (!token) {
+        setSignInOpen(true);
+        Alert.alert('Sign in to stop background work', 'This response is still running on the Gateway. Sign in again so Expert AI can request cancellation.');
+        continue;
+      }
+      const poll = activeDurablePollsRef.current.get(assistantId);
+      if (poll) poll.cancelled = true;
+      turnGenerationRef.current.set(assistantId, (turnGenerationRef.current.get(assistantId) ?? 0) + 1);
+      durableJobIdsRef.current.delete(assistantId);
+      activeDurablePollsRef.current.delete(assistantId);
+      void cancelChatJob(token, job.jobId).then(async (cancelled) => {
+        if (cancelled.status === 'cancelled') {
+          await forgetChatJob(job.jobId);
+          await forgetChatJobIntent(assistantId);
+          await recordChatJobHistory({ jobId: job.jobId, conversationId: job.conversationId, assistantMessageId: assistantId, status: 'cancelled', error: 'Stopped by user', completedAt: cancelled.updatedAt });
+          const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === job.jobId);
+          if (scheduled) await markScheduledTaskRunSafely(scheduled.id, 'failed', 'Cancelled by you');
+          return;
+        }
+        void reconcileDurableJobs();
+      }).catch(() => {
+        Alert.alert('Stop not confirmed', 'The Gateway did not confirm cancellation. This response may still finish in the background; its status will be checked again when connected.');
+        void reconcileDurableJobs();
+      });
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, streaming: false, queued: false, failed: false }
+        : message));
+    }
+    for (const [assistantId, pending] of pendingTurnsRef.current) {
+      if (pending.conversationId !== targetConversationId || durableJobIdsRef.current.has(assistantId)) continue;
+      const retry = queuedSendsRef.current.get(assistantId);
+      if (retry) continue;
+      nextTurnGeneration(assistantId);
+      pendingTurnsRef.current.delete(assistantId);
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, streaming: false, queued: false, failed: true, text: message.text || 'Stopped before the request reached the Gateway. Tap Retry to send it again.' }
+        : message));
+    }
+    for (const [assistantId, queued] of queuedSendsRef.current) {
+      if (!queued.durable && !queued.history) continue;
+      const owner = durableJobIdsRef.current.get(assistantId)?.conversationId ?? queued.conversationId;
+      const conversationMatches = owner === targetConversationId;
+      if (!conversationMatches) continue;
+      if (durableJobIdsRef.current.has(assistantId)) continue;
+      if (Platform.OS === 'ios') queued.manualHold = true;
+      const timer = retryTimersRef.current.get(assistantId);
+      if (timer) clearTimeout(timer);
+      retryTimersRef.current.delete(assistantId);
+      // Stop cancels automatic retries, but keeps the exact accepted request
+      // available for the message's explicit Retry action.
+      setMessages((prev) => prev.map((message) => message.id === assistantId
+        ? { ...message, streaming: false, queued: false, failed: true }
+        : message));
+    }
+    releaseConversationSend(targetConversationId);
+    setAgentActivity((previous) => ({ ...previous, [targetConversationId]: { phase: 'idle', tools: previous[targetConversationId]?.tools || [] } }));
+  }, [session, conversationId, releaseConversationSend, reconcileDurableJobs, markScheduledTaskRunSafely, nextTurnGeneration]);
 
   const handlePauseResume = useCallback(async () => {
+    if (pauseResumeBusyRef.current) return;
     const token = session ? getActiveToken(session) : null;
-    if (!token) return;
+    if (!token) {
+      setSignInOpen(true);
+      Alert.alert('Sign in to control background work', 'Your session is missing or expired. Sign in again to pause or resume this response.');
+      return;
+    }
     const jobs = [...durableJobIdsRef.current.entries()].filter(([, job]) => job.conversationId === conversationId);
     if (!jobs.length) return;
-    const nextPaused = !durableJobsPaused;
-    await Promise.all(jobs.map(async ([, job]) => {
-      try {
-        if (nextPaused) await pauseChatJob(token, job.jobId);
-        else await resumeChatJob(token, job.jobId);
-      } catch {
-        // Reconciliation will restore the authoritative state on the next foreground.
+    const pausedIds = new Set(durableJobStates.filter((state) => state.status === 'paused').map((state) => state.assistantMessageId));
+    // The visible control says Resume as soon as any tracked job is paused;
+    // make that action resume the whole conversation so mixed states converge.
+    const hasPausedJob = jobs.some(([assistantId]) => pausedIds.has(assistantId));
+    const nextPaused = !hasPausedJob;
+    pauseResumeBusyRef.current = true;
+    setPauseResumeBusy(true);
+    try {
+      const outcomes = await Promise.all(jobs.map(async ([assistantId, job]) => {
+        try {
+          const updated = nextPaused
+            ? await pauseChatJob(token, job.jobId)
+            : await resumeChatJob(token, job.jobId);
+          return { assistantId, updated };
+        } catch {
+          return { assistantId, updated: null };
+        }
+      }));
+      if (outcomes.some((outcome) => !outcome.updated)) {
+        Alert.alert('Could not update background work', 'The Gateway did not confirm the pause or resume request. The current status will be refreshed; try again when connected.');
+        void reconcileDurableJobs();
+        return;
       }
-    }));
-    setDurableJobsPaused(nextPaused);
-    setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: nextPaused ? 'paused' : 'thinking', tools: previous[conversationId]?.tools || [] } }));
-    void reconcileDurableJobs();
-  }, [session, conversationId, durableJobsPaused, reconcileDurableJobs]);
+      setDurableJobStates((previous) => previous.map((state) => {
+        const response = outcomes.find((outcome) => outcome.assistantId === state.assistantMessageId)?.updated;
+        return response ? {
+          ...state,
+          status: response.status,
+          updatedAt: response.updatedAt,
+          error: response.error,
+          retryable: response.retryable,
+          phase: response.phase,
+          nextRetryAt: response.nextRetryAt,
+          servedModel: response.servedModel,
+        } : state;
+      }));
+      setAgentActivity((previous) => ({ ...previous, [conversationId]: { phase: nextPaused ? 'paused' : 'thinking', tools: previous[conversationId]?.tools || [] } }));
+      void reconcileDurableJobs();
+    } finally {
+      pauseResumeBusyRef.current = false;
+      setPauseResumeBusy(false);
+    }
+  }, [session, conversationId, durableJobStates, reconcileDurableJobs]);
 
   const handlePrepareDesktopHandoff = useCallback(async () => {
     const token = session ? getActiveToken(session) : null;
@@ -3128,9 +4385,15 @@ export default function SimpleChatScreen() {
       await Clipboard.setStringAsync(invitation.token);
       Alert.alert('Desktop handoff ready', `Job ID: ${job.jobId}\n\nThe five-minute invitation was copied to your clipboard. Paste it into the paired desktop Expert AI session and enter the Job ID above. No transcript content was copied.`);
     } catch (error) {
+      if (error instanceof ChatJobRequestError && error.status === 404) {
+        // A handoff can race the Gateway's retention window. Reconcile the
+        // original job so the composer does not keep presenting controls for
+        // work the Gateway has already removed.
+        void reconcileDurableJobs().catch(() => {});
+      }
       Alert.alert('Handoff unavailable', error instanceof Error ? error.message : 'Could not prepare the desktop handoff.');
     }
-  }, [session, conversationId]);
+  }, [session, conversationId, reconcileDurableJobs]);
 
   const scheduledTasksLoaded = useScheduledTasksStore((s) => s.loaded);
   const loadScheduledTasks = useScheduledTasksStore((s) => s.load);
@@ -3151,6 +4414,117 @@ export default function SimpleChatScreen() {
     if (!scheduledTasksLoaded) loadScheduledTasks();
   }, [scheduledTasksLoaded, loadScheduledTasks]);
 
+  const replaceRemoteScheduledRun = useCallback(async (
+    task: ScheduledTask,
+    prompt: string,
+    scheduledFor: number,
+  ) => {
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+      setShowAiDisclaimer(true);
+      throw new Error('Agree to the AI data disclosure before scheduling or restarting this task.');
+    }
+    const token = session ? getActiveToken(session) : null;
+    if (!token || !task.conversationId || !task.jobId) {
+      throw new Error('Sign in again before restarting this scheduled task.');
+    }
+    const saved = (await listConversations()).find((conversation) => conversation.id === task.conversationId);
+    if (!saved) throw new Error('The task conversation is no longer available. Keep the existing task and try again.');
+
+    const assistantId = makeId();
+    const userMessage = { id: makeId(), role: 'user' as const, text: prompt };
+    const assistantMessage = { id: assistantId, role: 'assistant' as const, text: '' };
+    const nextMessages = [...saved.messages, userMessage, assistantMessage];
+    const history: ChatMessage[] = [
+      buildSystemContextMessage(currentStyleOpts(prompt)),
+      { role: 'user', content: prompt },
+    ];
+    let durable;
+    let conversationUpdated = false;
+    let intentSaved = false;
+    let submissionStarted = false;
+    try {
+      await saveConversation(saved.id, nextMessages, saved.modelId);
+      conversationUpdated = true;
+      if (Platform.OS === 'ios') await NotificationsService.requestPermission();
+      const pushToken = await NotificationsService.getPushToken();
+      const idempotencyKey = `scheduled-${assistantId}`;
+      await rememberChatJobIntent({
+        idempotencyKey,
+        model: saved.modelId,
+        messages: history,
+        assistantMessageId: assistantId,
+        conversationId: saved.id,
+        ...(Platform.OS === 'ios' ? { scheduledTaskId: task.id } : {}),
+        pushToken,
+        scheduledFor,
+        createdAt: Date.now(),
+      });
+      intentSaved = true;
+      submissionStarted = true;
+      durable = await createChatJob({
+        token,
+        idempotencyKey,
+        model: saved.modelId,
+        messages: history,
+        conversationId: saved.id,
+        pushToken,
+        scheduledFor,
+      });
+    } catch (error) {
+      const definiteGatewayRejection = error instanceof ChatJobRequestError && error.status >= 400 && error.status < 500;
+      if (Platform.OS === 'ios' && submissionStarted && intentSaved && !definiteGatewayRejection) {
+        // A timeout or lost response may mean the Gateway accepted this exact
+        // idempotency key. Keep its transcript and intent so reconciliation can
+        // recover the same job and replace the existing task row without
+        // generating a duplicate or losing the user's restart request.
+        void reconcileDurableJobs().catch(() => {});
+        throw new Error('The Gateway may have accepted this task restart, but its response was lost. The request is saved and Expert AI will check its status; do not submit the same task again yet.');
+      }
+      if (intentSaved) await forgetChatJobIntent(assistantId).catch(() => {});
+      if (conversationUpdated) await saveConversation(saved.id, saved.messages, saved.modelId).catch(() => {});
+      throw error;
+    }
+
+    const originalAssistantMessageId = task.assistantMessageId;
+    try {
+      // Replace the old task-to-job link first, so a cold start can only
+      // reconcile the current run if local task persistence is slow/fails.
+      await useScheduledTasksStore.getState().replaceRemoteTask(task.id, scheduledFor, {
+        jobId: durable.jobId,
+        conversationId: saved.id,
+        assistantMessageId: assistantId,
+        prompt,
+      });
+    } catch (error) {
+      if (Platform.OS === 'ios') void reconcileDurableJobs().catch(() => {});
+      Alert.alert('Replacement accepted, local list needs recovery', 'The Gateway accepted the replacement task but the local task list could not save it. The pending job will be reconciled; the previous task was kept.');
+      throw error;
+    }
+    try {
+      await rememberChatJob({
+        jobId: durable.jobId,
+        assistantMessageId: assistantId,
+        conversationId: saved.id,
+        ...(Platform.OS === 'ios' ? { scheduledTaskId: task.id } : {}),
+        createdAt: Date.now(),
+      });
+    } catch (error) {
+      if (Platform.OS !== 'ios') throw error;
+      // The accepted create intent is still durable and idempotent. Do not
+      // tell the user that restart failed after the local task row was already
+      // replaced; let reconciliation restore the job-ID association.
+      console.warn('[Tasks] Restart accepted; recovering local job association from its intent.', error);
+      void reconcileDurableJobs().catch(() => {});
+    }
+    await forgetChatJob(task.jobId).catch(() => {});
+    await cancelChatJob(token, task.jobId).catch(() => {});
+    return {
+      conversation: { ...saved, messages: nextMessages, updatedAt: Date.now() },
+      jobId: durable.jobId,
+      previousAssistantMessageId: originalAssistantMessageId,
+    };
+  }, [session, aiDisclosureAccepted, reconcileDurableJobs]);
+
   // Surface the daily-notes streak badge on load without opening the sheet.
   useEffect(() => {
     listDailyNotes()
@@ -3166,27 +4540,98 @@ export default function SimpleChatScreen() {
    *  path remains the offline fallback for tasks the gateway cannot accept. */
   const runScheduledTask = useCallback(
     async (task: ScheduledTask) => {
-      if (sending) return;
+      if (sendingConversationRef.current) {
+        Alert.alert('Another response is running', 'Stop the current response or wait for it to finish before starting a scheduled task.');
+        return;
+      }
+      if (task.submissionPending) {
+        void reconcileDurableJobs();
+        Alert.alert('Checking Gateway status', 'Expert AI is reconciling the saved task request. It will not submit a duplicate while acceptance is uncertain.');
+        return;
+      }
+      // A local-only reminder is the explicit fallback when Gateway rejected
+      // a scheduled request or the user has not yet created a remote job. Do
+      // not silently route its Play action back through Gateway scheduling.
+      const launchLocalTaskDirectly = Platform.OS === 'ios'
+        && !task.jobId
+        && !task.conversationId
+        && !task.assistantMessageId;
+      if (Platform.OS === 'ios' && !aiDisclosureAccepted
+        && (task.status === 'failed' || task.status === 'completed' || task.status === 'exhausted')) {
+        setShowAiDisclaimer(true);
+        return;
+      }
       // Remotely scheduled jobs are already running (or waiting) on the
       // gateway. A local reminder must never create a duplicate generation.
       if (task.jobId) {
+      const taskNeedsGatewayAction = task.status === 'failed' || task.status === 'completed' || task.status === 'exhausted';
+        if (Platform.OS === 'ios' && taskNeedsGatewayAction && !getActiveToken(session)) {
+          setSignInOpen(true);
+          return;
+        }
         if (task.status === 'failed' && session) {
           const token = getActiveToken(session);
           if (token) {
-            const retried = await retryChatJob(token, task.jobId).catch(() => null);
-            if (retried?.status === 'queued' || retried?.status === 'running') {
-              await markScheduledTaskPending(task.id);
+            try {
+              const retried = await retryChatJob(token, task.jobId);
+              if (retried.status === 'queued' || retried.status === 'running') {
+                // Start reconciliation immediately after the Gateway accepts
+                // the retry, even if saving the local task status fails.
+                if (Platform.OS === 'ios') void reconcileDurableJobs();
+                await markScheduledTaskPending(task.id);
+                void reconcileDurableJobs();
+              } else if (retried.retryable === false || retried.status === 'dead_letter') {
+                const restarted = await replaceRemoteScheduledRun(task, task.prompt, Date.now());
+                loadedConversationIdRef.current = restarted.conversation.id;
+                setConversationId(restarted.conversation.id);
+                setMessages(restarted.conversation.messages.map((message) => ({ ...message })));
+                setPlannerOpen(false);
+                void reconcileDurableJobs();
+              } else {
+                Alert.alert('Task did not restart', retried.error || `The Gateway reported ${retried.status}.`);
+              }
+            } catch (error) {
+              if (error instanceof ChatJobRequestError && error.status === 404) {
+                try {
+                  const restarted = await replaceRemoteScheduledRun(task, task.prompt, Date.now());
+                  loadedConversationIdRef.current = restarted.conversation.id;
+                  setConversationId(restarted.conversation.id);
+                  setMessages(restarted.conversation.messages.map((message) => ({ ...message })));
+                  setPlannerOpen(false);
+                  void reconcileDurableJobs();
+                } catch (restartError) {
+                  Alert.alert('Could not restart task', restartError instanceof Error ? restartError.message : 'Check your connection and try again.');
+                }
+              } else {
+                Alert.alert('Could not retry task', error instanceof Error ? error.message : 'Check your connection and try again.');
+              }
             }
           }
+        } else if (task.status === 'completed' || task.status === 'exhausted') {
+          try {
+            const restarted = await replaceRemoteScheduledRun(task, task.prompt, Date.now());
+            loadedConversationIdRef.current = restarted.conversation.id;
+            setConversationId(restarted.conversation.id);
+            setMessages(restarted.conversation.messages.map((message) => ({ ...message })));
+            setPlannerOpen(false);
+            void reconcileDurableJobs();
+          } catch (error) {
+            Alert.alert('Could not restart task', error instanceof Error ? error.message : 'Check your connection and try again.');
+          }
+          return;
         }
         if (task.conversationId) {
-          const saved = (await listConversations()).find((conversation) => conversation.id === task.conversationId);
+          const saved = (await listConversations().catch(() => [])).find((conversation) => conversation.id === task.conversationId);
           if (saved) {
             setConversationId(saved.id);
             setMessages(saved.messages.map((message) => ({ ...message })));
             setPlannerOpen(false);
           }
         }
+        return;
+      }
+      if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+        setShowAiDisclaimer(true);
         return;
       }
       if (!session) {
@@ -3199,44 +4644,107 @@ export default function SimpleChatScreen() {
       // open document belonged to whatever chat was on screen before, not to
       // this brand-new scheduled-task conversation.
       useDocumentChatStore.getState().close();
-      setConversationId(makeConversationId());
+      const taskConversationId = makeConversationId();
+      const assistantId = makeId();
+      const generation = nextTurnGeneration(assistantId);
+      if (Platform.OS === 'ios') {
+        pendingTurnsRef.current.set(assistantId, { conversationId: taskConversationId, generation });
+      }
+      loadedConversationIdRef.current = taskConversationId;
+      setConversationId(taskConversationId);
       setMessages([]);
       setInput('');
       setError(null);
       setIsIncognito(false);
+      sendingConversationRef.current = taskConversationId;
       setSending(true);
 
       const userMsg: DisplayMessage = { id: makeId(), role: 'user', text: task.prompt };
-      const assistantId = makeId();
+      const assistantMsg: DisplayMessage = { id: assistantId, role: 'assistant', text: '', streaming: true };
       const history: ChatMessage[] = [
         buildSystemContextMessage(currentStyleOpts(task.prompt)),
         { role: 'user', content: task.prompt },
       ];
-      setMessages([userMsg, { id: assistantId, role: 'assistant', text: '', streaming: true }]);
+      setMessages([userMsg, assistantMsg]);
 
-      const result = await runCompletion(history, assistantId);
-      await markScheduledTaskRun(
-        task.id,
-        result.success ? 'completed' : 'failed',
-        result.text ? result.text.slice(0, 160) : undefined,
-      );
+      let result: { success: boolean; text: string };
+      try {
+        // Persist the task conversation before submitting durable work. The
+        // Gateway job can finish quickly or survive app termination; either
+        // way reconciliation needs the transcript row to already exist.
+        if (Platform.OS === 'ios') {
+          await saveConversation(taskConversationId, [userMsg, assistantMsg], modelId);
+        }
+        result = Platform.OS === 'ios' && !launchLocalTaskDirectly
+          ? await runDurableCompletion(history, assistantId, 0, undefined, generation, taskConversationId, task.id)
+          : await runCompletion(history, assistantId, generation, taskConversationId);
+      } catch (error) {
+        pendingTurnsRef.current.delete(assistantId);
+        const definitelyRejected = error instanceof ChatJobRequestError && error.status >= 400 && error.status < 500;
+        const checkingAcceptedSubmission = Platform.OS === 'ios'
+          && !definitelyRejected
+          && !(error instanceof ChatJobIntentPersistenceError)
+          && useScheduledTasksStore.getState().tasks.some((item) => item.id === task.id && item.submissionPending);
+        if (checkingAcceptedSubmission) {
+          const checkingText = 'Checking whether the Gateway accepted this task. Do not run it again until the task status is updated.';
+          setMessages((previous) => previous.map((message) => message.id === assistantId
+            ? { ...message, text: checkingText, streaming: false, queued: true, failed: false }
+            : message));
+          releaseConversationSend(taskConversationId);
+          void reconcileDurableJobs().catch(() => {});
+          return;
+        }
+        if (Platform.OS === 'ios') void reconcileDurableJobs().catch(() => {});
+        result = { success: false, text: error instanceof Error ? error.message : 'Generation failed before a response was returned.' };
+        setMessages((previous) => previous.map((message) => message.id === assistantId
+          ? { ...message, text: result.text, streaming: false, queued: false, failed: true }
+          : message));
+        releaseConversationSend(taskConversationId);
+      }
+      if (Platform.OS === 'ios' && turnGenerationRef.current.get(assistantId) !== generation) {
+        // Stop/New Chat already settled the foreground turn. Do not turn an
+        // intentional cancellation into a failed task or send a failure alert.
+        return;
+      }
+      if (Platform.OS === 'ios' && useScheduledTasksStore.getState().tasks.some((item) => item.id === task.id && item.jobId)) {
+        // Durable completion already updates the linked task when terminal;
+        // if polling is still active, leave it pending for Gateway reconciliation.
+        return;
+      }
+      await markScheduledTaskRunSafely(task.id, result.success ? 'completed' : 'failed', result.text ? result.text.slice(0, 160) : 'Generation failed before a response was returned.', {
+        conversationId: taskConversationId,
+        assistantMessageId: assistantId,
+      });
+        if (result.success) void NotificationsService.notifyTaskCompleted(task.prompt, task.id, taskConversationId);
+        else void NotificationsService.notifyTaskFailed(task.prompt, result.text || undefined, task.id, taskConversationId);
     },
-    [sending, session, runCompletion, markScheduledTaskRun, markScheduledTaskPending],
+    [session, runCompletion, runDurableCompletion, markScheduledTaskRunSafely, markScheduledTaskPending, reconcileDurableJobs, nextTurnGeneration, replaceRemoteScheduledRun, aiDisclosureAccepted, modelId, releaseConversationSend],
   );
 
   // Deep-link from a "task is due" notification tap: ?runTaskId=… → run it once.
-  const { runTaskId } = useLocalSearchParams<{ runTaskId?: string }>();
+  const { runTaskId, runTaskAt } = useLocalSearchParams<{ runTaskId?: string; runTaskAt?: string }>();
   const handledRunTaskRef = useRef<string | null>(null);
   useEffect(() => {
-    if (!runTaskId || handledRunTaskRef.current === runTaskId) return;
-    if (!scheduledTasksLoaded || !session || sending) return;
+    const taskRunKey = runTaskId ? `${runTaskId}:${runTaskAt ?? ''}` : null;
+    if (!runTaskId || handledRunTaskRef.current === taskRunKey) return;
+    if (!scheduledTasksLoaded || !session || sendingConversationRef.current) return;
     const task = useScheduledTasksStore.getState().tasks.find((t) => t.id === runTaskId);
-    handledRunTaskRef.current = runTaskId;
-    router.setParams({ runTaskId: undefined });
-    if (task && task.status === 'pending') {
+    const opensExistingRemoteTask = !!task?.jobId && task.status === 'pending';
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted && !opensExistingRemoteTask) {
+      setShowAiDisclaimer(true);
+      return;
+    }
+    handledRunTaskRef.current = taskRunKey;
+    router.setParams({ runTaskId: undefined, runTaskAt: undefined });
+    if (Platform.OS === 'ios' && task && runTaskAt && Number(runTaskAt) !== task.scheduledFor) {
+      // A delivered notification can remain in Notification Center after its
+      // task was rescheduled. Never run the new schedule from an old reminder.
+      return;
+    }
+    if (task && (task.status === 'pending' || task.status === 'failed')) {
       runScheduledTask(task);
     }
-  }, [runTaskId, scheduledTasksLoaded, session, sending, runScheduledTask, router]);
+  }, [runTaskId, runTaskAt, scheduledTasksLoaded, session, sending, runScheduledTask, router, aiDisclosureAccepted]);
 
   // --- Daily Notes ---------------------------------------------------------
 
@@ -3267,6 +4775,77 @@ export default function SimpleChatScreen() {
     [ensureTodayNote],
   );
 
+  const openNoteWriterAfterPlanner = useCallback(() => {
+    if (Platform.OS !== 'ios') {
+      setNoteWriterOpen(true);
+      return;
+    }
+    pendingNoteWriterOpenRef.current = true;
+    setPlannerOpen(false);
+    setTimeout(() => {
+      if (!pendingNoteWriterOpenRef.current) return;
+      pendingNoteWriterOpenRef.current = false;
+      setNoteWriterOpen(true);
+    }, 900);
+  }, []);
+
+  const handlePlannerDismiss = useCallback(() => {
+    if (pendingNoteWriterOpenRef.current) {
+      pendingNoteWriterOpenRef.current = false;
+      setNoteWriterOpen(true);
+      return;
+    }
+    if (pendingScheduleSheetOpenRef.current) {
+      pendingScheduleSheetOpenRef.current = false;
+      setScheduleNewOpen(true);
+    }
+  }, []);
+
+  const openScheduleFromPlanner = useCallback(() => {
+    setScheduleInitialPrompt('');
+    scheduleOpenedFromPlannerRef.current = true;
+    if (Platform.OS !== 'ios') {
+      setPlannerOpen(false);
+      setScheduleNewOpen(true);
+      return;
+    }
+    pendingScheduleSheetOpenRef.current = true;
+    setPlannerOpen(false);
+    setTimeout(() => {
+      if (!pendingScheduleSheetOpenRef.current) return;
+      pendingScheduleSheetOpenRef.current = false;
+      setScheduleNewOpen(true);
+    }, 900);
+  }, []);
+
+  const handleScheduleSheetDismiss = useCallback(() => {
+    if (!pendingPlannerAfterScheduleDismissRef.current) return;
+    pendingPlannerAfterScheduleDismissRef.current = false;
+    scheduleOpenedFromPlannerRef.current = false;
+    setPlannerOpen(true);
+  }, []);
+
+  const closeScheduleAndShowPlanner = useCallback(() => {
+    setPlannerTab('scheduled');
+    if (Platform.OS !== 'ios') {
+      setScheduleNewOpen(false);
+      setPlannerOpen(true);
+      return;
+    }
+    pendingPlannerAfterScheduleDismissRef.current = true;
+    setScheduleNewOpen(false);
+    setTimeout(handleScheduleSheetDismiss, 900);
+  }, [handleScheduleSheetDismiss]);
+
+  const handleScheduleSheetClose = useCallback(() => {
+    if (scheduleOpenedFromPlannerRef.current && Platform.OS === 'ios') {
+      closeScheduleAndShowPlanner();
+      return;
+    }
+    scheduleOpenedFromPlannerRef.current = false;
+    setScheduleNewOpen(false);
+  }, [closeScheduleAndShowPlanner]);
+
   const handleChangePlannerTab = useCallback(
     async (t: PlannerTab) => {
       if (t === 'notes' && !dailyNote) await ensureTodayNote();
@@ -3277,13 +4856,9 @@ export default function SimpleChatScreen() {
 
   const handleSaveNoteBody = useCallback(
     async (id: string, body: string) => {
-      try {
-        await saveDailyNoteBody(id, body);
-      } catch {
-        /* best effort */
-      }
+      await saveDailyNoteBody(id, body);
       setDailyNote((prev) => (prev && prev.id === id ? { ...prev, body, touched: true } : prev));
-      refreshDailyNotes();
+      await refreshDailyNotes();
     },
     [refreshDailyNotes],
   );
@@ -3293,16 +4868,16 @@ export default function SimpleChatScreen() {
     if (n) {
       setDailyNote(n);
       setViewingTodayNote(id === localDayKey());
-      setNoteWriterOpen(true); // jump straight into the full-screen writer
+      openNoteWriterAfterPlanner();
     }
-  }, []);
+  }, [openNoteWriterAfterPlanner]);
 
   const handleOpenNoteDate = useCallback(async (id: string) => {
     const existing = await getDailyNote(id);
     if (existing) {
       setDailyNote(existing);
       setViewingTodayNote(id === localDayKey());
-      setNoteWriterOpen(true);
+      openNoteWriterAfterPlanner();
       return;
     }
     Alert.alert(
@@ -3316,14 +4891,14 @@ export default function SimpleChatScreen() {
             void getOrCreateNoteForDate(id).then((n) => {
               setDailyNote(n);
               setViewingTodayNote(id === localDayKey());
-              setNoteWriterOpen(true);
+              openNoteWriterAfterPlanner();
               void refreshDailyNotes();
             });
           },
         },
       ],
     );
-  }, [refreshDailyNotes]);
+  }, [refreshDailyNotes, openNoteWriterAfterPlanner]);
 
   const handleBackToToday = useCallback(async () => {
     const today = await getOrCreateTodayNote();
@@ -3358,22 +4933,29 @@ export default function SimpleChatScreen() {
    *  every Daily-Notes AI action (insights / digest / end-of-day). */
   const seedNoteChat = useCallback(
     async (systemExtra: string, firstUserText: string) => {
+      if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+        setShowAiDisclaimer(true);
+        return;
+      }
       if (!session) {
         setSignInOpen(true);
         return;
       }
-      if (sending) return;
+      if (sendingConversationRef.current) return;
       setPlannerOpen(false);
       setExtractOpen(false);
       // Silent close — same reasoning as runScheduledTask above: this starts
       // a brand-new, unrelated conversation, so any open document doesn't
       // belong in it, and this flow has no natural place for a confirmation.
       useDocumentChatStore.getState().close();
-      setConversationId(makeConversationId());
+      const targetConversationId = makeConversationId();
+      loadedConversationIdRef.current = targetConversationId;
+      setConversationId(targetConversationId);
       setMessages([]);
       setInput('');
       setError(null);
       setIsIncognito(false);
+      sendingConversationRef.current = targetConversationId;
       setSending(true);
 
       const sys = buildSystemContextMessage(currentStyleOpts());
@@ -3383,10 +4965,12 @@ export default function SimpleChatScreen() {
       ];
       const userMsg: DisplayMessage = { id: makeId(), role: 'user', text: firstUserText };
       const assistantId = makeId();
+      const generation = nextTurnGeneration(assistantId);
+      pendingTurnsRef.current.set(assistantId, { conversationId: targetConversationId, generation });
       setMessages([userMsg, { id: assistantId, role: 'assistant', text: '', streaming: true }]);
-      await runCompletion(history, assistantId);
+      await runCompletion(history, assistantId, generation, targetConversationId);
     },
-    [session, sending, runCompletion],
+    [session, runCompletion, nextTurnGeneration, aiDisclosureAccepted],
   );
 
   const NOTE_COACH_DIRECTIVE =
@@ -3435,15 +5019,41 @@ export default function SimpleChatScreen() {
   }, [dailyNote]);
 
   const handleConfirmScheduleTasks = useCallback(
-    async (tasks: string[], whenMs: number) => {
+    async (selection: string[] | { index: number; prompt: string }[], whenMs: number) => {
       const store = useScheduledTasksStore.getState();
-      // Stagger by a minute each so reminders don't all fire in the same second.
-      for (let i = 0; i < tasks.length; i++) {
-        await store.addTask(tasks[i], whenMs + i * 60 * 1000);
+      if (Platform.OS !== 'ios') {
+        const tasks = selection as string[];
+        for (let i = 0; i < tasks.length; i++) {
+          await store.addTask(tasks[i], whenMs + i * 60 * 1000);
+        }
+        setExtractOpen(false);
+        buzz(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
+        Alert.alert('Scheduled', `${tasks.length} task${tasks.length === 1 ? '' : 's'} scheduled. You'll be reminded, and they run when you open the app.`);
+        return;
       }
-      setExtractOpen(false);
+      const tasks = selection as { index: number; prompt: string }[];
+      // Stagger by a minute each so reminders don't all fire in the same second.
+      const completed: number[] = [];
+      let reminderCount = 0;
+      for (let i = 0; i < tasks.length; i++) {
+        try {
+          const savedTask = await store.addTask(tasks[i].prompt, whenMs + completed.length * 60 * 1000);
+          completed.push(tasks[i].index);
+          if (savedTask.reminderId) reminderCount += 1;
+        } catch (error) {
+          const remainingCount = tasks.length - completed.length;
+          Alert.alert(
+            completed.length ? 'Some tasks were scheduled' : 'Tasks could not be scheduled',
+            `${completed.length ? `${completed.length} task${completed.length === 1 ? '' : 's'} saved. ` : ''}${remainingCount} task${remainingCount === 1 ? '' : 's'} remain selected so you can retry without duplicating saved tasks. ${error instanceof Error ? error.message : 'Check device storage and try again.'}`,
+          );
+          return completed;
+        }
+      }
       buzz(() => Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success));
-      Alert.alert('Scheduled', `${tasks.length} task${tasks.length === 1 ? '' : 's'} scheduled. You'll be reminded, and they run when you open the app.`);
+      Alert.alert('Scheduled', reminderCount === tasks.length
+        ? `${tasks.length} task${tasks.length === 1 ? '' : 's'} saved. You'll get a reminder; tap Play in Scheduled Tasks when you are ready to run them.`
+        : `${tasks.length} task${tasks.length === 1 ? '' : 's'} saved. Device notifications are unavailable or disabled, so there may be no reminder. Tap Play in Scheduled Tasks to run them.`);
+      return completed;
     },
     [],
   );
@@ -3492,12 +5102,17 @@ export default function SimpleChatScreen() {
    *  same conversation up to (and including) the last user message. Only
    *  meaningful on the very last message, which is what the UI restricts it to. */
   const regenerateWith = useCallback(async (steer?: string) => {
-    if (sending || messages.length === 0) return;
+    if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+      setShowAiDisclaimer(true);
+      return;
+    }
+    if (sendingConversationRef.current === conversationId || messages.length === 0) return;
     if (!session) { setSignInOpen(true); return; }
     const lastIdx = messages.length - 1;
     if (messages[lastIdx].role !== 'assistant') return;
 
     setError(null);
+    sendingConversationRef.current = conversationId;
     setSending(true);
     buzz(() => Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light));
     const priorMessages = messages.slice(0, lastIdx);
@@ -3510,21 +5125,22 @@ export default function SimpleChatScreen() {
       ...(steer ? [{ role: 'user' as const, content: steer }] : []),
     ];
     const assistantId = makeId();
+    const generation = nextTurnGeneration(assistantId);
+    pendingTurnsRef.current.set(assistantId, { conversationId, generation });
 
     setMessages([...priorMessages, { id: assistantId, role: 'assistant', text: '', streaming: true }]);
 
     const lastUserText = [...priorMessages].reverse().find((message) => message.role === 'user')?.text || '';
-    if (/^(?:\/task|\/research)\b/i.test(lastUserText.trim())) {
+    if (Platform.OS === 'android' && /^(?:\/task|\/research)\b/i.test(lastUserText.trim())) {
       try {
-        await runDurableCompletion(history, assistantId);
+        await runDurableCompletion(history, assistantId, 0, undefined, generation, conversationId);
         return;
       } catch {
-        // Preserve the existing stream path if the durable endpoint is
-        // unavailable during a rollout or while the device is offline.
+        // Preserve the existing Android stream path when durable jobs are unavailable.
       }
     }
-    await runCompletion(history, assistantId);
-  }, [sending, messages, runCompletion, runDurableCompletion, session]);
+    await runCompletion(history, assistantId, generation, conversationId);
+  }, [conversationId, messages, runCompletion, runDurableCompletion, session, nextTurnGeneration, aiDisclosureAccepted]);
 
   const handleRegenerate = useCallback(() => regenerateWith(), [regenerateWith]);
 
@@ -3537,6 +5153,42 @@ export default function SimpleChatScreen() {
       { text: 'Cancel', style: 'cancel' as const },
     ]);
   }, [regenerateWith]);
+
+  const retryMessage = useCallback((assistantId: string) => {
+    const queued = queuedSendsRef.current.get(assistantId);
+    if (queued) {
+      queued.manualHold = false;
+      void flushQueuedSend(assistantId);
+      return;
+    }
+    const message = messagesRef.current.find((item) => item.id === assistantId);
+    if (Platform.OS === 'ios' && message?.queued) {
+      // A durable job can be restored from the device outbox after relaunch,
+      // while this bubble is already visible from chat history. Reconcile it
+      // before offering a replacement generation so Retry cannot duplicate a
+      // request that is still running on the Gateway.
+      void reconcileDurableJobs().then((observedJobs) => {
+        if (observedJobs?.some((job) => job.assistantMessageId === assistantId && job.status === 'completed')) return;
+        const recovered = queuedSendsRef.current.get(assistantId);
+        if (recovered) {
+          recovered.manualHold = false;
+          void flushQueuedSendRef.current?.(assistantId);
+          return;
+        }
+        if (durableJobIdsRef.current.has(assistantId)) {
+          Alert.alert('Response still running', 'The Gateway still has this response in progress. Its status will continue to update in this conversation.');
+          return;
+        }
+        const latest = messagesRef.current[messagesRef.current.length - 1];
+        if (latest?.id === assistantId && latest.role === 'assistant') handleRegenerate();
+      }).catch(() => {
+        Alert.alert('Could not confirm response status', 'Expert AI could not check whether this request is still running. Try again when connected; it will not create a duplicate request until the Gateway can be checked.');
+      });
+      return;
+    }
+    const lastMessage = messagesRef.current[messagesRef.current.length - 1];
+    if (lastMessage?.id === assistantId && lastMessage.role === 'assistant') handleRegenerate();
+  }, [flushQueuedSend, handleRegenerate, reconcileDurableJobs]);
 
   const handleCopyMessage = useCallback((text: string) => {
     Clipboard.setStringAsync(text);
@@ -3593,8 +5245,8 @@ export default function SimpleChatScreen() {
 
   const handleClearLocalData = useCallback(() => {
     Alert.alert(
-      'Clear Local Data',
-      'This clears your saved conversations, theme, and notification preferences on this device. Your account and messages on the server are not affected.',
+      'Clear Chat History & Theme',
+      `This removes saved conversations from this device, resets the theme to ${Platform.OS === 'ios' ? 'Expert AI' : 'Dark'}, and turns off By the Way notifications. Daily notes, scheduled tasks, archive files, paired computers, and server account data are not removed.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -3603,11 +5255,13 @@ export default function SimpleChatScreen() {
           onPress: async () => {
             try {
               await clearAllConversations();
-              await useThemeStore.getState().setPreset('dark');
+              if (Platform.OS === 'ios') await useThemeStore.getState().reset();
+              else await useThemeStore.getState().setPreset('dark');
               await NotificationsService.scheduleByTheWayNotifications(false);
-              Alert.alert('Done', 'Local data has been cleared.');
-            } catch {
-              Alert.alert('Error', 'Could not clear local data. Please try again.');
+              if (Platform.OS === 'ios') await NotificationsService.setByTheWayNotificationsPreference(false);
+              Alert.alert('Done', 'Chat history and theme have been cleared.');
+            } catch (error) {
+              Alert.alert('Could not clear everything', error instanceof Error ? error.message : 'Chat history, theme, and notification preferences could not all be cleared. Please try again.');
             }
           },
         },
@@ -3622,7 +5276,7 @@ export default function SimpleChatScreen() {
     }
     Alert.alert(
       'Delete Account',
-      'This will permanently delete your account and all associated data. This action cannot be undone.',
+      'This permanently deletes the account managed by Expert AI on the server. It does not remove daily notes, scheduled tasks, archive files, paired computers, or other data stored on this device. This action cannot be undone.',
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -3637,7 +5291,7 @@ export default function SimpleChatScreen() {
               setBalance(null);
               setHelpCenterOpen(false);
               setAccountOpen(false);
-              Alert.alert('Account Deleted', 'Your account has been successfully deleted.');
+              Alert.alert('Account Deleted', 'Your Expert AI server account has been deleted. Data stored locally on this device was not removed.');
             } catch (err) {
               Alert.alert('Error', err instanceof Error ? err.message : 'Failed to delete account. Please try again.');
             }
@@ -3754,11 +5408,16 @@ export default function SimpleChatScreen() {
 
   const handleSaveRecipe = useCallback((text: string) => {
     const save = async (name: string) => {
-      await saveAutomationRecipe(name, text);
-      Alert.alert('Workflow saved', 'This workflow is now available in Settings.', [
-        { text: 'Done', style: 'cancel' },
-        { text: 'Open Settings', onPress: () => router.push('/(app)/settings') },
-      ]);
+      try {
+        await saveAutomationRecipe(name, text);
+        Alert.alert('Workflow saved', 'This workflow is now available in Settings.', [
+          { text: 'Done', style: 'cancel' },
+          { text: 'Open Settings', onPress: () => router.push('/(app)/settings') },
+        ]);
+      } catch (error) {
+        if (Platform.OS !== 'ios') throw error;
+        Alert.alert('Workflow not saved', error instanceof Error ? error.message : 'This workflow could not be saved on this device. Please try again.');
+      }
     };
     if (Platform.OS === 'ios') Alert.prompt('Save automation recipe', 'Give this reusable workflow a name.', (name) => { if (name?.trim()) void save(name); }, 'plain-text', 'Research summary');
     else void save('Saved workflow');
@@ -3793,7 +5452,7 @@ export default function SimpleChatScreen() {
         onRegenerate={handleRegenerate}
         onRegenerateMenu={handleRegenerateMenu}
         onVerifyAgain={() => regenerateWith('Verify your previous answer again using current live sources where relevant. Label freshness, separate verified facts from inference, and call out any changed or uncertain claims.')}
-        onRetryQueued={flushQueuedSend}
+        onRetryQueued={() => retryMessage(item.id)}
         onReport={handleReportMessage}
         onFeedback={handleResponseFeedback}
         onShare={handleShareMessage}
@@ -3807,29 +5466,8 @@ export default function SimpleChatScreen() {
       />
       </View>
     ),
-    [colors, isDark, messages.length, lastUserIndex, speakingMessageId, handleCopyMessage, handleRegenerate, handleRegenerateMenu, regenerateWith, flushQueuedSend, handleReportMessage, handleResponseFeedback, handleShareMessage, handleSaveReplyToNote, handleScheduleFollowup, handleSaveRecipe, handleEditMessage, handleToggleReadAloud, handleSaveDocument, inChatMatchIds, activeMatchIndex],
+    [colors, isDark, messages.length, lastUserIndex, speakingMessageId, handleCopyMessage, handleRegenerate, handleRegenerateMenu, regenerateWith, retryMessage, handleReportMessage, handleResponseFeedback, handleShareMessage, handleSaveReplyToNote, handleScheduleFollowup, handleSaveRecipe, handleEditMessage, handleToggleReadAloud, handleSaveDocument, inChatMatchIds, activeMatchIndex],
   );
-
-  /** Single-line usage summary for the one "Unlimited" model. Community/no-pass reads the daily
-   *  message cap (a real, user-facing limit — worth showing). A paid pass reads the `pro` bucket
-   *  the gateway's "unlimited" router bills into, but deliberately shows USAGE ONLY, never the
-   *  ceiling — "Unlimited" means pay-for-hours-and-keep-going, so surfacing a token denominator
-   *  would read as a hidden cap and undercut the whole point of the plan, even though a real
-   *  budget exists server-side. Never hardcoded, always live off /balance. */
-  const freeModelDescription = useMemo(() => {
-    // Same entitlement-vs-effective distinction as effectiveTier above: whether someone is on
-    // the free allowance is about whether a pass is ACTIVE right now, not what they're entitled
-    // to buy. balance.passActive is the direct, authoritative signal for that.
-    if (!balance?.passActive) {
-      const c = balance?.community;
-      return c ? `Free tier, ${c.used}/${c.limit} messages today` : 'Free tier, limited messages/day';
-    }
-    const used = (balance?.used?.pro || 0) + (balance?.used?.foundation || 0) + (balance?.used?.free || 0) + (balance?.used?.opus || 0);
-    if (typeof used === 'number' && used > 0) {
-      return `Included in your plan, ${formatTokenCount(used)} tokens used`;
-    }
-    return 'Included in your plan';
-  }, [balance]);
 
   const handleStartSignIn = useCallback(async () => {
     const email = signInEmail.trim().toLowerCase();
@@ -3897,10 +5535,20 @@ export default function SimpleChatScreen() {
   // it never goes straight into the trial (see trialGateOpen above).
   const handleStartTrial = useCallback(() => {
     setSignInError(null);
+    if (Platform.OS === 'ios') {
+      // UIKit cannot reliably present one RN Modal on top of another. Dismiss
+      // the sign-in sheet first and present the trial terms from onDismiss.
+      pendingTrialGateRef.current = true;
+      setSignInOpen(false);
+      return;
+    }
     setTrialGateOpen(true);
   }, []);
 
   const handleConfirmTrial = useCallback(async () => {
+    if (Platform.OS === 'ios' && trialStartInFlightRef.current) return;
+    if (Platform.OS === 'ios') trialStartInFlightRef.current = true;
+    setTrialStarting(true);
     setTrialGateOpen(false);
     setSignInError(null);
     setSignInStatus('opening');
@@ -3913,6 +5561,9 @@ export default function SimpleChatScreen() {
     } catch (err) {
       setSignInStatus('error');
       setSignInError(err instanceof Error ? err.message : String(err));
+    } finally {
+      if (Platform.OS === 'ios') trialStartInFlightRef.current = false;
+      setTrialStarting(false);
     }
   }, []);
 
@@ -4075,13 +5726,40 @@ export default function SimpleChatScreen() {
     [session],
   );
 
+  const currentDurableJobs = durableJobStates.filter((job) => {
+    const owner = durableJobIdsRef.current.get(job.assistantMessageId);
+    const queued = queuedSendsRef.current.get(job.assistantMessageId);
+    const conversationOwner = owner?.conversationId ?? queued?.conversationId;
+    const hasLiveAssociation = !!owner || (!!queued?.durable && !queued.manualHold);
+    return conversationOwner === conversationId
+      && hasLiveAssociation
+      && ['running', 'queued', 'paused'].includes(job.status);
+  });
+  const currentJobsPaused = currentDurableJobs.some((job) => job.status === 'paused');
+  const currentConversationHasQueuedWork = messages.some((message) =>
+    message.role === 'assistant'
+    && message.queued
+    && queuedSendsRef.current.has(message.id),
+  );
+  const currentConversationHasRetryTimer = Array.from(retryTimersRef.current.keys()).some((assistantId) => {
+    const queued = queuedSendsRef.current.get(assistantId);
+    const owner = durableJobIdsRef.current.get(assistantId)?.conversationId ?? queued?.conversationId;
+    return owner === conversationId;
+  });
+  const currentConversationHasActiveWork = currentConversationBusy
+    || currentConversationStreaming
+    || currentConversationDurableJobActive
+    || currentDurableJobs.length > 0
+    || currentConversationHasQueuedWork
+    || currentConversationHasRetryTimer;
+
   return (
     <Animated.View
       style={[
         styles.container,
         {
           backgroundColor: colors.background,
-          paddingBottom: keyboardPadding,
+          paddingBottom: Platform.OS === 'ios' ? iosKeyboardPadding : keyboardPadding,
         },
       ]}
     >
@@ -4275,6 +5953,20 @@ export default function SimpleChatScreen() {
               <Ionicons name="close" size={18} color={colors.textSecondary} />
             </Pressable>
           </View>
+          {documentPersistenceError ? (
+            <Pressable
+              onPress={handleRetryDocumentPersistence}
+              accessibilityRole="button"
+              accessibilityLabel="Document draft could not be saved locally. Tap to retry."
+              style={{ flexDirection: 'row', alignItems: 'center', gap: 7, paddingHorizontal: 12, paddingVertical: 8, backgroundColor: isDark ? 'rgba(255,69,58,0.15)' : 'rgba(255,59,48,0.08)' }}
+            >
+              <Ionicons name="warning-outline" size={15} color={colors.errorColor} />
+              <Text style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 11, color: colors.errorColor }}>
+                Draft not saved on this device. Keep this file open and retry.
+              </Text>
+              <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 11, color: colors.errorColor }}>Retry</Text>
+            </Pressable>
+          ) : null}
           {!docCardCollapsed ? (
             <>
               {docViewMode === 'edit' ? (
@@ -4361,6 +6053,21 @@ export default function SimpleChatScreen() {
                 <Ionicons name="close" size={24} color={colors.textSecondary} />
               </Pressable>
             </View>
+
+            {documentPersistenceError ? (
+              <Pressable
+                onPress={handleRetryDocumentPersistence}
+                accessibilityRole="button"
+                accessibilityLabel="Document draft could not be saved locally. Tap to retry."
+                style={{ flexDirection: 'row', alignItems: 'center', gap: 8, paddingHorizontal: 16, paddingVertical: 10, backgroundColor: isDark ? 'rgba(255,69,58,0.15)' : 'rgba(255,59,48,0.08)' }}
+              >
+                <Ionicons name="warning-outline" size={16} color={colors.errorColor} />
+                <Text style={{ flex: 1, fontFamily: Fonts.sans, fontSize: 12, color: colors.errorColor }}>
+                  Draft not saved on this device. Keep this file open and retry.
+                </Text>
+                <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 12, color: colors.errorColor }}>Retry</Text>
+              </Pressable>
+            ) : null}
 
             {docViewMode === 'edit' ? (
               <DocumentEditorInput
@@ -4592,6 +6299,12 @@ export default function SimpleChatScreen() {
         </View>
       ) : null}
 
+      {historyPersistenceError ? (
+        <Text accessibilityRole="alert" style={{ paddingHorizontal: 16, paddingVertical: 6, fontFamily: Fonts.sans, fontSize: 12, color: colors.errorColor }}>
+          {historyPersistenceError}
+        </Text>
+      ) : null}
+
       {messages.length > 0 && (agentPhase !== 'idle' || currentConversationDurableJobActive) ? (
         <View
           accessibilityRole="text"
@@ -4627,25 +6340,51 @@ export default function SimpleChatScreen() {
         </View>
       ) : null}
 
-      {messages.length > 0 && durableJobStates.some((job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused') ? (
+      {currentDurableJobs.length > 0 || currentConversationHasQueuedWork || currentConversationHasRetryTimer ? (
         <Pressable
           onPress={async () => {
-            const detail = durableJobStates.map((job) => {
+            const activeDurableDetail = currentDurableJobs.map((job) => {
               const retryIn = job.nextRetryAt && job.nextRetryAt > Date.now()
                 ? ` · retrying in ${Math.ceil((job.nextRetryAt - Date.now()) / 1000)}s`
                 : '';
-              return `${(job.phase || job.status).replace(/_/g, ' ').toUpperCase()} · ${job.jobId.slice(0, 8)}${retryIn}${job.error ? ` · ${job.error}` : ''}`;
+              const assistantIndex = messagesRef.current.findIndex((message) => message.id === job.assistantMessageId);
+              const prompt = assistantIndex > 0
+                ? [...messagesRef.current.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user')?.text
+                : undefined;
+              return `${(job.phase || job.status).replace(/_/g, ' ').toUpperCase()}${prompt ? ` · ${prompt.slice(0, 90)}` : ` · ${job.jobId.slice(0, 8)}`}${retryIn}${job.error ? ` · ${job.error}` : ''}`;
             }).join('\n');
-            const failed = durableJobStates.find((job) => job.status === 'failed' && job.retryable !== false && queuedSendsRef.current.has(job.assistantMessageId));
-            const deadLettered = durableJobStates.find((job) => job.status === 'dead_letter');
+            const queuedDetail = messages
+              .filter((message) => message.role === 'assistant' && message.queued && queuedSendsRef.current.has(message.id))
+              .map((message) => {
+                const queued = queuedSendsRef.current.get(message.id);
+                const userIndex = messagesRef.current.findIndex((item) => item.id === message.id);
+                const prompt = userIndex > 0
+                  ? [...messagesRef.current.slice(0, userIndex)].reverse().find((item) => item.role === 'user')?.text
+                  : undefined;
+                return `WAITING TO RETRY${prompt ? ` · ${prompt.slice(0, 90)}` : ''}${queued?.attempts ? ` · attempt ${queued.attempts}` : ''}`;
+              }).join('\n');
+            const detail = [activeDurableDetail, queuedDetail].filter(Boolean).join('\n');
+            const visibleAssistantIds = new Set(messagesRef.current.filter((message) => message.role === 'assistant').map((message) => message.id));
+            const failed = durableJobStates.find((job) => job.status === 'failed' && job.retryable !== false && queuedSendsRef.current.has(job.assistantMessageId) && visibleAssistantIds.has(job.assistantMessageId));
+            const deadLettered = durableJobStates.find((job) => job.status === 'dead_letter' && visibleAssistantIds.has(job.assistantMessageId));
             const history = await readChatJobHistory().catch(() => []);
-            const historyDetail = history.slice(-5).reverse().map((job) => `${job.status.toUpperCase()} · ${job.jobId.slice(0, 8)}${job.error ? ` · ${job.error}` : ''}`).join('\n');
+            const historyConversations = await listConversations().catch(() => []);
+            const historyDetail = history.slice(-5).reverse().map((job) => {
+              const scheduled = useScheduledTasksStore.getState().tasks.find((task) => task.jobId === job.jobId);
+              const conversation = historyConversations.find((item) => item.id === job.conversationId);
+              const assistantIndex = conversation?.messages.findIndex((message) => message.id === job.assistantMessageId) ?? -1;
+              const prompt = scheduled?.prompt || (conversation && assistantIndex > 0
+                ? [...conversation.messages.slice(0, assistantIndex)].reverse().find((message) => message.role === 'user')?.text
+                : undefined);
+              return `${job.status.toUpperCase()} · ${(prompt || job.jobId).slice(0, 90)}${job.error ? ` · ${job.error}` : ''}`;
+            }).join('\n');
+            const trackedCount = currentDurableJobs.length + messages.filter((message) => message.role === 'assistant' && message.queued && queuedSendsRef.current.has(message.id)).length;
             Alert.alert(
               'Background work',
-              `${durableJobStates.length} request${durableJobStates.length === 1 ? '' : 's'} are tracked.\n\n${detail || 'No active requests.'}${historyDetail ? `\n\nRecent history:\n${historyDetail}` : ''}${deadLettered ? '\n\nOne request exhausted its safe retry budget. Start a fresh request rather than retrying indefinitely.' : ''}`,
+              `${trackedCount} request${trackedCount === 1 ? '' : 's'} are tracked in this chat.\n\n${detail || 'No active requests.'}${historyDetail ? `\n\nRecent history:\n${historyDetail}` : ''}${deadLettered ? '\n\nOne request exhausted its safe retry budget. Start a fresh request rather than retrying indefinitely.' : ''}`,
               failed ? [
                 { text: 'Close', style: 'cancel' },
-                { text: 'Retry failed job', onPress: () => flushQueuedSendRef.current?.(failed.assistantMessageId) },
+                { text: 'Retry failed job', onPress: () => retryMessage(failed.assistantMessageId) },
               ] : [{ text: 'Close', style: 'cancel' }],
             );
           }}
@@ -4655,12 +6394,12 @@ export default function SimpleChatScreen() {
         >
           <Ionicons name="pulse-outline" size={16} color={colors.accent} />
           <Text style={{ flex: 1, fontFamily: Fonts.sansMedium, fontSize: 12, color: colors.text }}>
-            {durableJobStates.filter((job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused').length} background request{durableJobStates.filter((job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused').length === 1 ? '' : 's'} · tap for status
+            {currentDurableJobs.length + messages.filter((message) => message.role === 'assistant' && message.queued && queuedSendsRef.current.has(message.id)).length} request{currentDurableJobs.length + messages.filter((message) => message.role === 'assistant' && message.queued && queuedSendsRef.current.has(message.id)).length === 1 ? '' : 's'} · tap for status
           </Text>
           <Ionicons name="chevron-forward" size={15} color={colors.textTertiary} />
         </Pressable>
       ) : null}
-      {messages.length > 0 && durableJobStates.some((job) => job.status === 'running' || job.status === 'queued' || job.status === 'paused') ? (
+      {currentDurableJobs.length > 0 ? (
         <Pressable
           onPress={() => void handlePrepareDesktopHandoff()}
           accessibilityRole="button"
@@ -4713,9 +6452,9 @@ export default function SimpleChatScreen() {
 
       {composerMode ? (
         <View style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingTop: 8, gap: 7 }} accessibilityRole="text">
-          <Ionicons name={composerMode === 'Agent Task' ? 'git-branch-outline' : 'search-outline'} size={15} color={colors.accent} />
-          <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 12, color: colors.accent }}>{composerMode} mode active</Text>
-          <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: colors.textTertiary }}>· tools and durable recovery enabled</Text>
+          <Ionicons name={composerMode === 'Agent Task' ? 'git-branch-outline' : composerMode.includes('Document') ? 'document-text-outline' : 'funnel-outline'} size={15} color={colors.accent} />
+          <Text style={{ fontFamily: Fonts.sansMedium, fontSize: 12, color: colors.accent }}>{composerMode}{Platform.OS === 'android' ? ' mode active' : ' controls active'}</Text>
+          {Platform.OS === 'android' && (composerMode === 'Agent Task' || composerMode === 'Research Brief') ? <Text style={{ fontFamily: Fonts.sans, fontSize: 11, color: colors.textTertiary }}>· tools and durable recovery enabled</Text> : null}
         </View>
       ) : null}
       {/* Keyboard accessory toolbar — everything that used to crowd the top bar
@@ -4815,15 +6554,18 @@ export default function SimpleChatScreen() {
           multiline
           onSubmitEditing={handleSend}
         />
-        {durableJobsActive > 0 ? (
+        {currentConversationDurableJobActive ? (
           <Pressable
             onPress={handlePauseResume}
+            disabled={pauseResumeBusy}
             hitSlop={6}
             accessibilityRole="button"
-            accessibilityLabel={durableJobsPaused ? 'Resume background response' : 'Pause background response'}
-            style={({ pressed }) => [styles.composerAction, { opacity: pressed ? 0.55 : 1 }]}
+            accessibilityLabel={pauseResumeBusy ? 'Updating background response' : currentJobsPaused ? 'Resume background response' : 'Pause background response'}
+            style={({ pressed }) => [styles.composerAction, { opacity: pauseResumeBusy ? 0.55 : pressed ? 0.55 : 1 }]}
           >
-            <Ionicons name={durableJobsPaused ? 'play' : 'pause'} size={17} color={colors.textTertiary} />
+            {pauseResumeBusy
+              ? <ActivityIndicator size="small" color={colors.textTertiary} />
+              : <Ionicons name={currentJobsPaused ? 'play' : 'pause'} size={17} color={colors.textTertiary} />}
           </Pressable>
         ) : null}
         <ImageAttachButton
@@ -4854,18 +6596,18 @@ export default function SimpleChatScreen() {
             onListeningChange={setVoiceListening}
           />
         <Pressable
-          onPress={sending || durableJobsActive > 0 ? handleStop : handleSend}
-          disabled={!currentConversationBusy && !currentConversationStreaming && !currentConversationDurableJobActive && !input.trim() && !pendingImage}
+          onPress={currentConversationHasActiveWork ? handleStop : handleSend}
+          disabled={!currentConversationHasActiveWork && !input.trim() && !pendingImage}
           style={({ pressed }) => [
             styles.sendButton,
             {
               backgroundColor: colors.accent,
-              opacity: !sending && durableJobsActive === 0 && !input.trim() && !pendingImage ? 0.4 : pressed ? 0.75 : 1,
+              opacity: !currentConversationHasActiveWork && !input.trim() && !pendingImage ? 0.4 : pressed ? 0.75 : 1,
             },
           ]}
         >
           <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: colors.onTint }}>
-            {sending || durableJobsActive > 0 ? 'Stop' : 'Send'}
+            {currentConversationHasActiveWork ? 'Stop' : 'Send'}
           </Text>
         </Pressable>
       </View>
@@ -4938,9 +6680,11 @@ export default function SimpleChatScreen() {
               />
             ) : null}
             {conversations.length === 0 ? (
-              <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, paddingVertical: 20, textAlign: 'center' }}>
-                No conversations yet.
+              <Text accessibilityRole={conversationHistoryError ? 'alert' : 'text'} style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, paddingVertical: 20, textAlign: 'center' }}>
+                {conversationHistoryError || 'No conversations yet.'}
               </Text>
+            ) : conversationHistoryError ? (
+              <Text accessibilityRole="alert" style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, paddingVertical: 20, textAlign: 'center' }}>{conversationHistoryError}</Text>
             ) : filteredConversations.length === 0 ? (
               <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, paddingVertical: 20, textAlign: 'center' }}>
                 No chats match “{historyQuery.trim()}”.
@@ -5025,6 +6769,7 @@ export default function SimpleChatScreen() {
                     </Pressable>
                     {projectPickerId === item.id ? (
                       <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 6, paddingHorizontal: 12, paddingBottom: 10 }}>
+                        {projectsLoadError ? <Text accessibilityRole="alert" style={{ color: colors.textSecondary, fontFamily: Fonts.sans, fontSize: 11 }}>{projectsLoadError}</Text> : null}
                         <Pressable
                           onPress={() => handleAssignProject(item.id, null)}
                           style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 12, backgroundColor: !item.projectId ? colors.text : 'transparent', borderWidth: item.projectId ? 1 : 0, borderColor: colors.border }}
@@ -5060,6 +6805,7 @@ export default function SimpleChatScreen() {
         isDark={isDark}
         colors={colors}
         onClose={() => setPlannerOpen(false)}
+        onDismiss={handlePlannerDismiss}
         note={dailyNote}
         isViewingToday={viewingTodayNote}
         streak={dailyStreak}
@@ -5067,7 +6813,7 @@ export default function SimpleChatScreen() {
         onChangeBody={handleSaveNoteBody}
         onOpenArchived={handleOpenArchivedNote}
         onOpenDate={handleOpenNoteDate}
-        onOpenWriter={() => setNoteWriterOpen(true)}
+        onOpenWriter={openNoteWriterAfterPlanner}
         onBackToToday={handleBackToToday}
         onDeleteArchived={handleDeleteArchivedNote}
         onAiInsights={handleNoteAiInsights}
@@ -5075,42 +6821,13 @@ export default function SimpleChatScreen() {
         onWeeklyDigest={handleNoteWeeklyDigest}
         onEndOfDayReview={handleNoteEndOfDayReview}
         onShareNote={handleShareNote}
-        onOpenScheduleNew={() => {
-          setPlannerOpen(false);
-          setScheduleNewOpen(true);
-        }}
+        onOpenScheduleNew={openScheduleFromPlanner}
         onRunTask={runScheduledTask}
-        onRescheduleRemote={async (task, scheduledFor) => {
-          const token = session ? getActiveToken(session) : null;
-          if (!token || !task.conversationId || !task.jobId) return;
-          const saved = (await listConversations()).find((conversation) => conversation.id === task.conversationId);
-          const assistant = saved ? [...saved.messages].reverse().find((message) => message.role === 'assistant') : null;
-          if (!saved || !assistant) return;
-          const history: ChatMessage[] = [
-            buildSystemContextMessage(currentStyleOpts(task.prompt)),
-            { role: 'user', content: task.prompt },
-          ];
-          const pushToken = await NotificationsService.getPushToken();
-          const durable = await createChatJob({
-            token,
-            idempotencyKey: `scheduled-${assistant.id}-${Date.now()}`,
-            model: saved.modelId,
-            messages: history,
-            conversationId: saved.id,
-            pushToken,
-            scheduledFor,
-          });
-          await rememberChatJob({
-            jobId: durable.jobId,
-            assistantMessageId: assistant.id,
-            conversationId: saved.id,
-            createdAt: Date.now(),
-          });
-          await useScheduledTasksStore.getState().replaceRemoteTask(task.id, scheduledFor, {
-            jobId: durable.jobId,
-            conversationId: saved.id,
-          });
-          await cancelChatJob(token, task.jobId).catch(() => {});
+        onRescheduleRemote={async (task, prompt, scheduledFor) => {
+          await replaceRemoteScheduledRun(task, prompt, scheduledFor);
+        }}
+        onReplaceRemoteTask={async (task, prompt, scheduledFor) => {
+          await replaceRemoteScheduledRun(task, prompt, scheduledFor);
         }}
       />
 
@@ -5124,9 +6841,7 @@ export default function SimpleChatScreen() {
         isViewingToday={viewingTodayNote}
         noteId={dailyNote?.id ?? null}
         body={dailyNote?.body ?? ''}
-        onChangeBody={(next) => {
-          if (dailyNote) handleSaveNoteBody(dailyNote.id, next);
-        }}
+        onChangeBody={(next) => dailyNote ? handleSaveNoteBody(dailyNote.id, next) : undefined}
         onClose={() => setNoteWriterOpen(false)}
         onBackToToday={handleBackToToday}
         actions={
@@ -5153,8 +6868,13 @@ export default function SimpleChatScreen() {
         isDark={isDark}
         colors={colors}
         initialPrompt={scheduleInitialPrompt}
-        onClose={() => setScheduleNewOpen(false)}
+        onClose={handleScheduleSheetClose}
+        onDismiss={handleScheduleSheetDismiss}
         onSchedule={async (prompt, scheduledFor) => {
+          if (Platform.OS === 'ios' && !aiDisclosureAccepted) {
+            setShowAiDisclaimer(true);
+            return;
+          }
           const token = session ? getActiveToken(session) : null;
           if (!token) {
             setSignInOpen(true);
@@ -5168,21 +6888,35 @@ export default function SimpleChatScreen() {
           ];
           const userMessage = { id: makeId(), role: 'user' as const, text: prompt };
           const scheduledAssistant = { id: assistantId, role: 'assistant' as const, text: '' };
+          let localTask: ScheduledTask | undefined;
+          let intentSaved = false;
+          let gatewaySubmissionStarted = false;
           try {
             await saveConversation(taskConversationId, [userMessage, scheduledAssistant], modelId);
+            if (Platform.OS === 'ios') await NotificationsService.requestPermission();
             const pushToken = await NotificationsService.getPushToken();
+            if (Platform.OS === 'ios') {
+              localTask = await useScheduledTasksStore.getState().addTask(prompt, scheduledFor);
+              await useScheduledTasksStore.getState().markSubmissionPending(localTask.id, {
+                conversationId: taskConversationId,
+                assistantMessageId: assistantId,
+              });
+            }
             await rememberChatJobIntent({
               idempotencyKey: `scheduled-${assistantId}`,
               model: modelId,
               messages: history,
               assistantMessageId: assistantId,
               conversationId: taskConversationId,
+              ...(Platform.OS === 'ios' && localTask ? { scheduledTaskId: localTask.id } : {}),
               pushToken,
               scheduledFor,
               createdAt: Date.now(),
             });
+            intentSaved = true;
             let durable;
             try {
+              gatewaySubmissionStarted = true;
               durable = await createChatJob({
                 token,
                 idempotencyKey: `scheduled-${assistantId}`,
@@ -5206,29 +6940,69 @@ export default function SimpleChatScreen() {
               jobId: durable.jobId,
               assistantMessageId: assistantId,
               conversationId: taskConversationId,
+              ...(Platform.OS === 'ios' && localTask ? {
+                scheduledTaskId: localTask.id,
+                scheduledFor,
+              } : {}),
               createdAt: Date.now(),
             });
-            await useScheduledTasksStore.getState().addTask(prompt, scheduledFor, {
-              jobId: durable.jobId,
-              conversationId: taskConversationId,
-            });
-          } catch (error) {
-            const definiteRejection = error instanceof ChatJobRequestError && error.status >= 400 && error.status < 500;
-            if (!definiteRejection) {
-              // Keep an uncertain network submission in the outbox; it may
-              // have been accepted server-side before the response was lost.
-              setScheduleNewOpen(false);
-              setPlannerTab('scheduled');
-              setPlannerOpen(true);
+            try {
+              let savedTask: ScheduledTask;
+              if (localTask && Platform.OS === 'ios') {
+                await useScheduledTasksStore.getState().replaceRemoteTask(localTask.id, scheduledFor, {
+                  jobId: durable.jobId,
+                  conversationId: taskConversationId,
+                  assistantMessageId: assistantId,
+                });
+                const recoveredTask = useScheduledTasksStore.getState().tasks.find((task) => task.id === localTask?.id);
+                if (!recoveredTask) throw new Error('The Gateway task was accepted, but its local task row could not be found.');
+                savedTask = recoveredTask;
+              } else {
+                savedTask = await useScheduledTasksStore.getState().addTask(prompt, scheduledFor, {
+                  jobId: durable.jobId,
+                  conversationId: taskConversationId,
+                  assistantMessageId: assistantId,
+                });
+              }
+              if (!pushToken && savedTask.reminderId) {
+                Alert.alert('Task reminder set', 'This iPhone will remind you when the task is due. Completion notifications depend on Gateway push registration; open Scheduled Tasks to check its result.');
+              } else if (!savedTask.reminderId) {
+                Alert.alert('Task scheduled without a due reminder', 'The Gateway accepted the task, but this iPhone could not save a local due reminder. Enable notifications in iPhone Settings; completion notifications still depend on Gateway push registration. The task will appear in Scheduled Tasks.');
+              }
+            } catch (error) {
+              closeScheduleAndShowPlanner();
+              if (Platform.OS === 'ios') void reconcileDurableJobs().catch(() => {});
+              Alert.alert(
+                'Task accepted, local list needs recovery',
+                `The Gateway accepted this scheduled task, but it could not be saved in the local task list. It will be recovered from the pending jobs list when possible. ${error instanceof Error ? error.message : ''}`.trim(),
+              );
               return;
             }
+          } catch (error) {
+            const definiteRejection = error instanceof ChatJobRequestError && error.status >= 400 && error.status < 500;
+            if (gatewaySubmissionStarted && intentSaved && !definiteRejection) {
+              // Keep an uncertain network submission in the outbox; it may
+              // have been accepted server-side before the response was lost.
+              closeScheduleAndShowPlanner();
+              if (Platform.OS === 'ios') void reconcileDurableJobs().catch(() => {});
+              Alert.alert(
+                'Scheduling status is uncertain',
+                'The Gateway did not confirm whether this task was accepted. Its task row is marked Checking status; Expert AI will reconcile the saved idempotency request. Do not create it again until that status changes.',
+              );
+              return;
+            }
+            if (localTask && Platform.OS === 'ios') {
+              await useScheduledTasksStore.getState().clearSubmissionPending(localTask.id).catch(() => {});
+            }
             // Explicit client rejection cannot have created a job, so retain
-            // the existing local-reminder fallback.
-            await useScheduledTasksStore.getState().addTask(prompt, scheduledFor);
+            // the already-saved local reminder as the fallback.
+            await deleteConversation(taskConversationId).catch(() => {});
+            if (!localTask) localTask = await useScheduledTasksStore.getState().addTask(prompt, scheduledFor);
+            if (!localTask.reminderId) {
+              Alert.alert('Task saved without a device reminder', 'iPhone notifications are unavailable or disabled. Enable them in iPhone Settings, or tap Play in Scheduled Tasks when the task is due.');
+            }
           }
-          setScheduleNewOpen(false);
-          setPlannerTab('scheduled');
-          setPlannerOpen(true);
+          closeScheduleAndShowPlanner();
         }}
       />
 
@@ -5356,6 +7130,7 @@ export default function SimpleChatScreen() {
                 </Text>
               ) : null}
             </View>
+            {Platform.OS === 'android' ? <>
             <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 18, color: colors.text, marginTop: 18 }}>
               Choose a plan
             </Text>
@@ -5403,6 +7178,16 @@ export default function SimpleChatScreen() {
                 </View>
               ))}
             </View>
+            </> : (
+              <View style={{ marginTop: 18, padding: 14, borderRadius: 14, backgroundColor: colors.buttonBackground }}>
+                <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: colors.text }}>
+                  Plan purchases
+                </Text>
+                <Text style={{ fontFamily: Fonts.sans, fontSize: 13, lineHeight: 19, color: colors.textSecondary, marginTop: 5 }}>
+                  Plan purchases and subscription restore are not available in the iOS app yet. Your current account plan and balance are shown here.
+                </Text>
+              </View>
+            )}
 
             {visibleAccountInfo?.welcomeBack ? (
               <View style={{ marginTop: 14, padding: 10, borderRadius: 10, backgroundColor: colors.buttonBackground }}>
@@ -5532,7 +7317,7 @@ export default function SimpleChatScreen() {
                 <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.text }}>Check subscription status</Text>
               </Pressable>
             ) : null}
-            <Pressable
+            {Platform.OS === 'android' ? <Pressable
               onPress={handleRestorePurchases}
               disabled={restoringPurchases}
               style={[styles.modelRow, { justifyContent: 'center', marginTop: 16, opacity: restoringPurchases ? 0.55 : 1 }]}
@@ -5544,7 +7329,7 @@ export default function SimpleChatScreen() {
                   Restore purchases
                 </Text>
               )}
-            </Pressable>
+            </Pressable> : null}
             <Pressable
               onPress={() =>
                 Linking.openURL(
@@ -6129,7 +7914,17 @@ export default function SimpleChatScreen() {
       ) : null}
 
       {/* Sign-in sheet */}
-      <Modal visible={signInOpen} transparent animationType="fade" onRequestClose={() => setSignInOpen(false)}>
+      <Modal
+        visible={signInOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSignInOpen(false)}
+        onDismiss={() => {
+          if (!pendingTrialGateRef.current) return;
+          pendingTrialGateRef.current = false;
+          setTrialGateOpen(true);
+        }}
+      >
         <Pressable
           style={[styles.overlay, { justifyContent: 'center', paddingHorizontal: 20 }]}
           onPress={() => (signInStatus !== 'waiting' && signInStatus !== 'opening' && signInStatus !== 'verifying' ? setSignInOpen(false) : null)}
@@ -6223,7 +8018,8 @@ export default function SimpleChatScreen() {
                 <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, textDecorationLine: 'underline' }}>Resend code</Text>
               </Pressable>
             ) : null}
-            {Platform.OS === 'android' || Platform.OS === 'web' ? (
+            {Platform.OS === 'android' || Platform.OS === 'web' ||
+            (Platform.OS === 'ios' && isGoogleSignInAvailable()) ? (
               <>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
                   <View style={{ flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }} />
@@ -6240,7 +8036,7 @@ export default function SimpleChatScreen() {
             ) : null}
             <Pressable
               onPress={handleStartTrial}
-              disabled={signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
+              disabled={trialStarting || signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
               style={({ pressed }) => [
                 styles.sendButton,
                 {
@@ -6248,12 +8044,14 @@ export default function SimpleChatScreen() {
                   backgroundColor: 'transparent',
                   borderWidth: 1,
                   borderColor: colors.accent,
-                  opacity: signInStatus === 'opening' || signInStatus === 'waiting' ? 0.4 : pressed ? 0.75 : 1,
+                  flexDirection: 'row',
+                  opacity: trialStarting || signInStatus === 'opening' || signInStatus === 'waiting' ? 0.4 : pressed ? 0.75 : 1,
                 },
               ]}
             >
+              {Platform.OS === 'ios' && trialStarting ? <ActivityIndicator size="small" color={colors.accent} style={{ marginRight: 8 }} /> : null}
               <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: colors.text }}>
-                Unlock 30 questions per day
+                {Platform.OS === 'ios' && trialStarting ? 'Starting your trial…' : 'Unlock 30 questions per day'}
               </Text>
             </Pressable>
             <Pressable
@@ -6296,11 +8094,11 @@ export default function SimpleChatScreen() {
               Help Center
             </Text>
             <Pressable
-              onPress={() => Linking.openURL('https://ssv.asia/android-help-center/')}
+              onPress={() => Linking.openURL('https://ssv.asia/')}
               style={[styles.modelRow, { marginTop: 4, flexDirection: 'column', alignItems: 'flex-start' }]}
             >
               <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: colors.text }}>
-                Visit Help Center
+                Visit ssv.asia
               </Text>
               <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: colors.textTertiary, marginTop: 2 }}>
                 Privacy Policy, Terms & Conditions, and support
@@ -6322,10 +8120,10 @@ export default function SimpleChatScreen() {
               style={[styles.modelRow, { marginTop: 8, flexDirection: 'column', alignItems: 'flex-start' }]}
             >
               <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 14, color: colors.text }}>
-                Clear Local Data
+                Clear Chat History & Theme
               </Text>
               <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: colors.textTertiary, marginTop: 2 }}>
-                Remove saved conversations and preferences on this device
+                Removes chat history and resets the theme. Notes, tasks, archives, and paired computers stay on this device.
               </Text>
             </Pressable>
             <Pressable
@@ -6336,7 +8134,7 @@ export default function SimpleChatScreen() {
                 Delete Account
               </Text>
               <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: colors.textTertiary, marginTop: 2 }}>
-                Permanently delete your account and all data
+                Delete your Expert AI server account. Local notes, tasks, archives, and paired computers remain.
               </Text>
             </Pressable>
             <Pressable onPress={() => setHelpCenterOpen(false)} style={{ marginTop: 14, alignItems: 'center' }}>
@@ -6361,7 +8159,7 @@ export default function SimpleChatScreen() {
               Before you start
             </Text>
             <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, lineHeight: 19 }}>
-              This trial gives you 30 AI questions today, no account needed. By continuing, you confirm you&apos;re 13 or older and agree to our{' '}
+              This trial gives you 30 AI questions today, no account needed. By continuing, you confirm you&apos;re 18 or older and agree to our{' '}
               <Text
                 style={{ textDecorationLine: 'underline', color: colors.text }}
                 onPress={() => Linking.openURL('https://ssv.asia/terms-and-conditions/')}
@@ -6433,14 +8231,15 @@ export default function SimpleChatScreen() {
       {/* AI Disclaimer Modal (shown on first launch) */}
       <AIDisclaimerModal
         visible={showAiDisclaimer}
-        onDismiss={() => {
-          setShowAiDisclaimer(false);
+        onDismiss={async () => {
+          setAiDisclosureAccepted(true);
           // Mark as seen so it doesn't show again
           try {
-            useThemeStore.getState().setAiDisclaimerSeen?.(true);
+            await useThemeStore.getState().setAiDisclaimerSeen?.(true);
           } catch (err) {
             console.warn('[AIDisclaimer] Failed to mark as seen:', err);
           }
+          setShowAiDisclaimer(false);
         }}
         isDark={isDark}
       />

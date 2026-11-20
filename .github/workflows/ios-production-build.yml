@@ -1,0 +1,115 @@
+name: iOS production build (App Store)
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - codex/ios-platform-fixes-20261114
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/ios-production-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-ios:
+    # GitHub-hosted xcode-27 image provides the current App Store upload SDK.
+    runs-on: xcode-27
+    env:
+      # Public OAuth client ID registered by the owner for com.ssvasia.expertai.
+      EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: 1093163336745-1m9gq2ka957532pd75mr339kltu8muop.apps.googleusercontent.com
+      EXPERT_AI_APS_ENVIRONMENT: production
+      EAS_BUILD_PROFILE: production
+      SENTRY_DISABLE_AUTO_UPLOAD: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Verify current App Store toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -showsdks | grep -Eq 'iphoneos27\.'
+
+      - name: Require production OAuth configuration
+        run: |
+          test -n "$EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID"
+          node -e 'if (!/^[A-Za-z0-9-]+\.apps\.googleusercontent\.com$/.test(process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID || "")) process.exit(1)'
+
+      - name: Install JavaScript dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Generate production iOS project
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Verify production bundle and capabilities
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const config = JSON.parse(execFileSync('npx', ['expo', 'config', '--type', 'public', '--json'], { encoding: 'utf8' }));
+          if (config.ios?.bundleIdentifier !== 'com.ssvasia.expertai') throw new Error(`Unexpected bundle: ${config.ios?.bundleIdentifier}`);
+          const project = fs.readFileSync('ios/ExpertAI.xcodeproj/project.pbxproj', 'utf8');
+          if (!project.includes('com.ssvasia.expertai.share-extension')) throw new Error('Production share extension bundle is missing.');
+          if (project.includes('com.local.expertai')) throw new Error('Local-test bundle ID leaked into the production project.');
+          const entitlements = JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', 'ios/ExpertAI/ExpertAI.entitlements'], { encoding: 'utf8' }));
+          if (entitlements['aps-environment'] !== 'production') throw new Error('Production APNs entitlement is missing.');
+          if (entitlements['com.apple.security.application-groups']?.[0] !== 'group.com.ssvasia.expertai') throw new Error('Production app group is missing.');
+          const plist = fs.readFileSync('ios/ExpertAI/Info.plist', 'utf8');
+          const googleClientId = process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID;
+          if (googleClientId) {
+            const prefix = googleClientId.match(/^([A-Za-z0-9-]+)\.apps\.googleusercontent\.com$/)?.[1];
+            if (!prefix || !plist.includes(`com.googleusercontent.apps.${prefix}`)) throw new Error('Google OAuth callback URL scheme missing.');
+          }
+          NODE
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Build unsigned production app
+        run: >-
+          xcodebuild -quiet -workspace ios/ExpertAI.xcworkspace
+          -scheme ExpertAI -configuration Release -sdk iphoneos
+          -derivedDataPath ios/build CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO
+          build
+
+      - name: Package and verify production IPA
+        run: |
+          set -euo pipefail
+          APP="ios/build/Build/Products/Release-iphoneos/ExpertAI.app"
+          EXT="$APP/PlugIns/ShareExtension.appex"
+          test -d "$EXT"
+          BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          EXT_BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$EXT/Info.plist")
+          test "$BUNDLE" = "com.ssvasia.expertai"
+          test "$EXT_BUNDLE" = "com.ssvasia.expertai.share-extension"
+          MINIMUM_IOS=$(/usr/libexec/PlistBuddy -c 'Print :MinimumOSVersion' "$APP/Info.plist")
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          DEVICE_FAMILY=$(/usr/libexec/PlistBuddy -c 'Print :UIDeviceFamily' "$APP/Info.plist")
+          EXECUTABLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$APP/Info.plist")
+          test "$MINIMUM_IOS" = "16.0"
+          /usr/bin/lipo "$APP/$EXECUTABLE" -verify_arch arm64
+          mkdir -p release/Payload
+          cp -R "$APP" release/Payload/ExpertAI.app
+          (cd release && zip -qry ExpertAI-production-unsigned.ipa Payload)
+          unzip -tq release/ExpertAI-production-unsigned.ipa
+          shasum -a 256 release/ExpertAI-production-unsigned.ipa > release/ExpertAI-production-unsigned.ipa.sha256
+          printf 'Signing: unsigned, technical build proof only\nBundle: %s\nShare Extension: %s\nVersion/build: %s (%s)\nMinimum iOS: %s\nDevice family: %s\n' "$BUNDLE" "$EXT_BUNDLE" "$VERSION" "$BUILD" "$MINIMUM_IOS" "$DEVICE_FAMILY" > release/BUILD-INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExpertAI-production-unsigned
+          path: release/ExpertAI-production-unsigned.*
+          if-no-files-found: error
+          retention-days: 7
