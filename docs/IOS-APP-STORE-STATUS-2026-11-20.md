@@ -253,3 +253,20 @@ once the signed sandbox build is ready; do not request or record its password.
   No access token is trusted directly from the client.
 - A Sandbox/device test and production capability configuration are still
   required. Existing OTP and Google sign-in remain supported.
+
+### Release candidate build 3 — 20 November 2026
+
+- iOS source commit: `9ced950042083b979834ecfa7215128ed7c891a7` on `main`;
+  marketing version `1.5.3`, build `3`.
+- Signed IPA workflow [44772618404](https://github.com/ssv-asia/localtest-temporary/actions/runs/44772618404)
+  and App Store Connect upload workflow
+  [44776684500](https://github.com/ssv-asia/localtest-temporary/actions/runs/44776684500)
+  succeeded. Wait for Apple processing, then confirm build 3 appears under
+  internal TestFlight before installing it.
+- Gateway Apple identity verification and note handling were deployed in Worker
+  version `a22539a3-9e16-40ac-82ce-f387cb4a52e5`; health/nonce smoke checks and
+  all 221 Gateway tests passed before/after deployment.
+- Build 3 still needs physical-device acceptance, especially Sandbox purchases
+  for every configured SKU and restore, Apple/Google/OTP sign-in, trial, and
+  daily-note writes. Internal upload success does not prove those live Apple
+  or device flows.

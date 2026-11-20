@@ -743,3 +743,28 @@ use this iOS repository as a behavioral reference.
 - The unsigned workflow's push trigger now skips documentation-only and
   workflow-file-only updates, avoiding expensive native compiles for handoff
   changes. Use its manual dispatch only when an unsigned compile is useful.
+
+## iOS release-candidate fixes and TestFlight upload — 20 November 2026
+
+- iOS source commit `9ced950042083b979834ecfa7215128ed7c891a7` is on `main`.
+  It includes the daily-note action/result handling, iOS first-run onboarding
+  persistence, APK-aligned subscription selector, and version `1.5.3 (3)`.
+- Verification passed: `corepack yarn tsc --noEmit`, targeted ESLint for the
+  modified screens, and `git diff --check`. No Android source was modified.
+- Gateway source commit `3bbdfda` is on
+  `codex/apple-iap-20261120`. Its Worker deployment completed as version
+  `a22539a3-9e16-40ac-82ce-f387cb4a52e5`; post-deploy `/health` and Apple nonce
+  endpoint smoke checks succeeded. The Gateway suite passed all 221 tests.
+- Signed IPA workflow
+  [44772618404](https://github.com/ssv-asia/localtest-temporary/actions/runs/44772618404)
+  and App Store Connect upload workflow
+  [44776684500](https://github.com/ssv-asia/localtest-temporary/actions/runs/44776684500)
+  both completed successfully. Apple processing and availability in internal
+  TestFlight must still be confirmed in App Store Connect.
+- Physical iPhone testing remains required for Apple/Google/OTP sign-in, trial,
+  natural-language and slash daily notes, each subscription SKU and restore,
+  onboarding persistence, keyboard toolbar behavior, and search appearance.
+- Pro Monthly availability is controlled by its App Store Connect product
+  status, price, localization, territory, and Sandbox storefront. The UI now
+  shows localized StoreKit products and explains a missing configured product;
+  confirm all products in App Store Connect and on device.
