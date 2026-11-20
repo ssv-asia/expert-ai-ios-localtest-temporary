@@ -8164,7 +8164,7 @@ export default function SimpleChatScreen() {
               Before you start
             </Text>
             <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, lineHeight: 19 }}>
-              This trial gives you 30 AI questions today, no account needed. By continuing, you confirm you&apos;re 13 or older and agree to our{' '}
+              This trial gives you 30 AI questions today, no account needed. By continuing, you confirm you&apos;re 18 or older and agree to our{' '}
               <Text
                 style={{ textDecorationLine: 'underline', color: colors.text }}
                 onPress={() => Linking.openURL('https://ssv.asia/terms-and-conditions/')}
