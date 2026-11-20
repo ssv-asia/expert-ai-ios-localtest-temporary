@@ -88,17 +88,17 @@ either run. Record the diagnostic replacement run and artifact below.
   Connect record, Apple sign-in, StoreKit, privacy-policy/data-retention
   reconciliation, account deletion, listing assets, and review remain open.
 
-## Artifact status
+## Verified IPA artifact — 15 November 2026
 
-No IPA from the latest source is verified or available at the time this note was
-written. Update this section only after checking the GitHub run, commit SHA,
-artifact contents, IPA checksum, metadata, and download location. An unsigned
-IPA requires a compatible signing/sideloading flow; it cannot be installed by
-itself as a signed App Store package.
+- GitHub Actions run [43719193028](https://github.com/ssv-asia/expert-ai-ios-localtest-temporary/actions/runs/43719193028) succeeded on commit `7ded23df0c2ed66fb966d9ed769251873be31fd5`. Release compile, package validations, ZIP integrity check, and artifact upload all passed.
+- Artifact: `ExpertAI-for-AltServer`, ID `14164127343`, 62,970,759-byte artifact ZIP, expires `2026-11-22T13:46:05Z`. GitHub artifact ZIP SHA-256: `58128f89e1aa945648f45ea9e846e0d7490b61f9650cdfc9ea3856c6c3b84aa0`.
+- Downloaded ZIP: `/Users/macbook/Downloads/ExpertAI-for-AltServer-run-43719193028.zip`. Extracted IPA: `/Users/macbook/Downloads/ExpertAI-for-AltServer-run-43719193028.ipa` (63,316,831 bytes). IPA SHA-256: `70737092de9bffd27b5b4842f5584f043618ef3c19bb14b80e5a20a03ec0095d`, matching the checksum file inside the CI artifact.
+- Verified with `unzip -tq`; app bundle `com.local.expertai`; Share Extension `com.local.expertai.share-extension`; version `1.5.3 (1)`; minimum iOS `16.0`; device family iPhone+iPad; architecture arm64. CI package checks also validated Sentry/app privacy manifests and embedded extension path.
+- This is an **unsigned** IPA. It is ready for the owner's AltServer/AltStore signing/sideload flow, not directly installable as a signed App Store app. Device installation and runtime acceptance have not yet been reported.
 
 
 ## Packaging diagnostic result — run 43714653876
 
 The diagnostic replacement run on `b562c4a6ae6a23fdb203b7aab3ac6ad089e045ac` passed Release compilation and the app checks for bundle `com.local.expertai`, version `1.5.3 (1)`, minimum iOS `16.0`, iPhone+iPad device families, arm64 executable, and privacy manifests. Packaging then failed because the embedded Share Extension bundle identifier was `com.local.expertai`, while its target is configured as `com.local.expertai.share-extension`. The workflow supplied `PRODUCT_BUNDLE_IDENTIFIER=com.local.expertai` as a global `xcodebuild` command-line override, which also overrode the extension target setting.
 
-The global bundle-ID override has been removed; Expo-generated target-specific identifiers remain authoritative. The packaging gate continues to require the app bundle ID and the expected distinct Share Extension bundle ID. Run `43714653876` uploaded no IPA. Build the corrected commit and inspect the extension Info.plist before reporting an artifact.
+The global bundle-ID override has been removed; Expo-generated target-specific identifiers remain authoritative. The packaging gate continues to require the app bundle ID and the expected distinct Share Extension bundle ID. Run `43714653876` uploaded no IPA. Corrected commit `7ded23df0c2ed66fb966d9ed769251873be31fd5` is pushed; replacement run [43719193028](https://github.com/ssv-asia/expert-ai-ios-localtest-temporary/actions/runs/43719193028) succeeded. The uploaded artifact was downloaded, its SHA-256 matched the embedded CI checksum, its IPA ZIP integrity passed, and app/extension bundle identifiers were inspected. See the verified artifact section.

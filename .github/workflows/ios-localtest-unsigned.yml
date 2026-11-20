@@ -1,10 +1,7 @@
-name: iOS local test IPA (unsigned)
+name: Legacy iOS local test IPA (unsigned)
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - codex/ios-platform-fixes-20261114
 
 jobs:
   build-ios:

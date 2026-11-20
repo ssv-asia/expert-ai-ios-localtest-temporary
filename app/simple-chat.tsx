@@ -155,6 +155,7 @@ import {
   recentNotesBlock,
   saveDailyNoteBody,
   executeDailyNoteTool,
+  DAILY_NOTE_TOOL,
   type DailyNote,
 } from '@/lib/daily-notes';
 import { useAppSettingsStore } from '@/features/settings/store';
@@ -1719,6 +1720,7 @@ export default function SimpleChatScreen() {
   const [trialGateOpen, setTrialGateOpen] = useState(false);
   const [trialStarting, setTrialStarting] = useState(false);
   const trialStartInFlightRef = useRef(false);
+  const pendingTrialGateRef = useRef(false);
   const [helpCenterOpen, setHelpCenterOpen] = useState(false);
 
   useEffect(() => {
@@ -2866,7 +2868,15 @@ export default function SimpleChatScreen() {
         setAgentActivity((previous) => ({ ...previous, [runtime.conversationId]: { phase: 'thinking', tools: previous[runtime.conversationId]?.tools || [] } }));
         await streamChatCompletion(
           turnHistory,
-          { token, model: modelId, signal: controller.signal },
+          {
+            token,
+            model: modelId,
+            signal: controller.signal,
+            // The Gateway owns slash-command interpretation. Advertise only
+            // this iOS-local capability so it can route note requests back to
+            // the app's existing on-device tool executor.
+            ...(Platform.OS === 'ios' ? { tools: [DAILY_NOTE_TOOL] } : {}),
+          },
           {
             onPhase: (phase) => {
               if (turnGenerationRef.current.get(assistantId) !== generation) return;
@@ -5530,6 +5540,13 @@ export default function SimpleChatScreen() {
   // it never goes straight into the trial (see trialGateOpen above).
   const handleStartTrial = useCallback(() => {
     setSignInError(null);
+    if (Platform.OS === 'ios') {
+      // UIKit cannot reliably present one RN Modal on top of another. Dismiss
+      // the sign-in sheet first and present the trial terms from onDismiss.
+      pendingTrialGateRef.current = true;
+      setSignInOpen(false);
+      return;
+    }
     setTrialGateOpen(true);
   }, []);
 
@@ -7902,7 +7919,17 @@ export default function SimpleChatScreen() {
       ) : null}
 
       {/* Sign-in sheet */}
-      <Modal visible={signInOpen} transparent animationType="fade" onRequestClose={() => setSignInOpen(false)}>
+      <Modal
+        visible={signInOpen}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setSignInOpen(false)}
+        onDismiss={() => {
+          if (!pendingTrialGateRef.current) return;
+          pendingTrialGateRef.current = false;
+          setTrialGateOpen(true);
+        }}
+      >
         <Pressable
           style={[styles.overlay, { justifyContent: 'center', paddingHorizontal: 20 }]}
           onPress={() => (signInStatus !== 'waiting' && signInStatus !== 'opening' && signInStatus !== 'verifying' ? setSignInOpen(false) : null)}

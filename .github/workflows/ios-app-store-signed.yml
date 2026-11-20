@@ -1,0 +1,139 @@
+name: iOS App Store signed IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-sign:
+    runs-on: xcode-27
+    env:
+      APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+      APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID }}
+      APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID }}
+      EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID: 1093163336745-1m9gq2ka957532pd75mr339kltu8muop.apps.googleusercontent.com
+      EXPERT_AI_APS_ENVIRONMENT: production
+      EAS_BUILD_PROFILE: production
+      SENTRY_DISABLE_AUTO_UPLOAD: "true"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: yarn
+
+      - name: Check required App Store Connect credentials
+        run: |
+          set -euo pipefail
+          test -n "$APPLE_TEAM_ID"
+          test -n "$APP_STORE_CONNECT_KEY_ID"
+          test -n "$APP_STORE_CONNECT_ISSUER_ID"
+          [[ "$APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]
+
+      - name: Verify current App Store toolchain
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -showsdks | grep -Eq 'iphoneos27\.'
+
+      - name: Install JavaScript dependencies
+        run: |
+          corepack enable
+          yarn install --immutable
+
+      - name: Generate production iOS project
+        run: npx expo prebuild --platform ios --clean --no-install
+
+      - name: Verify production signing targets and capabilities
+        run: |
+          set -euo pipefail
+          node <<'NODE'
+          const fs = require('fs');
+          const { execFileSync } = require('child_process');
+          const config = JSON.parse(execFileSync('npx', ['expo', 'config', '--type', 'public', '--json'], { encoding: 'utf8' }));
+          if (config.ios?.bundleIdentifier !== 'com.ssvasia.expertai') throw new Error('Production app bundle ID is incorrect.');
+          if (config.extra?.googleIosClientId !== process.env.EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID) throw new Error('Production Google OAuth client was not configured.');
+          const project = fs.readFileSync('ios/ExpertAI.xcodeproj/project.pbxproj', 'utf8');
+          if (!project.includes('com.ssvasia.expertai.share-extension')) throw new Error('Production Share Extension ID is missing.');
+          if (project.includes('com.local.expertai')) throw new Error('Local-test bundle ID leaked into the production project.');
+          const entitlements = JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', 'ios/ExpertAI/ExpertAI.entitlements'], { encoding: 'utf8' }));
+          if (entitlements['aps-environment'] !== 'production') throw new Error('Production APNs entitlement is missing.');
+          if (entitlements['com.apple.security.application-groups']?.[0] !== 'group.com.ssvasia.expertai') throw new Error('Production app group is missing.');
+          NODE
+
+      - name: Install CocoaPods
+        working-directory: ios
+        run: pod install
+
+      - name: Prepare App Store Connect key for Xcode automatic signing
+        env:
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$APP_STORE_CONNECT_PRIVATE_KEY"
+          KEY_PATH="$RUNNER_TEMP/AuthKey_${APP_STORE_CONNECT_KEY_ID}.p8"
+          printf '%s\n' "$APP_STORE_CONNECT_PRIVATE_KEY" > "$KEY_PATH"
+          chmod 600 "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          unset APP_STORE_CONNECT_PRIVATE_KEY
+
+      - name: Archive with Xcode automatic distribution signing
+        run: >-
+          xcodebuild -workspace ios/ExpertAI.xcworkspace
+          -scheme ExpertAI -configuration Release -destination 'generic/platform=iOS'
+          -archivePath "$RUNNER_TEMP/ExpertAI.xcarchive"
+          -allowProvisioningUpdates
+          -authenticationKeyPath "$APPLE_API_KEY_PATH"
+          -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID"
+          -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+          CODE_SIGN_STYLE=Automatic DEVELOPMENT_TEAM="$APPLE_TEAM_ID"
+          archive
+
+      - name: Export App Store Connect IPA
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ExportOptions.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0"><dict>
+            <key>destination</key><string>export</string>
+            <key>method</key><string>app-store-connect</string>
+            <key>signingStyle</key><string>automatic</string>
+            <key>teamID</key><string>${APPLE_TEAM_ID}</string>
+            <key>uploadSymbols</key><true/>
+            <key>manageAppVersionAndBuildNumber</key><false/>
+          </dict></plist>
+          PLIST
+          xcodebuild -exportArchive \
+            -archivePath "$RUNNER_TEMP/ExpertAI.xcarchive" \
+            -exportPath "$RUNNER_TEMP/export" \
+            -exportOptionsPlist "$RUNNER_TEMP/ExportOptions.plist" \
+            -allowProvisioningUpdates \
+            -authenticationKeyPath "$APPLE_API_KEY_PATH" \
+            -authenticationKeyID "$APP_STORE_CONNECT_KEY_ID" \
+            -authenticationKeyIssuerID "$APP_STORE_CONNECT_ISSUER_ID"
+          mkdir -p release
+          cp "$RUNNER_TEMP/export/ExpertAI.ipa" release/ExpertAI-App-Store.ipa
+          unzip -tq release/ExpertAI-App-Store.ipa
+          shasum -a 256 release/ExpertAI-App-Store.ipa > release/ExpertAI-App-Store.ipa.sha256
+          mkdir -p "$RUNNER_TEMP/exported-ipa"
+          unzip -q release/ExpertAI-App-Store.ipa -d "$RUNNER_TEMP/exported-ipa"
+          APP="$RUNNER_TEMP/exported-ipa/Payload/ExpertAI.app"
+          codesign --verify --deep --strict --verbose=2 "$APP"
+          BUNDLE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/Info.plist")
+          EXT=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$APP/PlugIns/ShareExtension.appex/Info.plist")
+          test "$BUNDLE" = "com.ssvasia.expertai"
+          test "$EXT" = "com.ssvasia.expertai.share-extension"
+          VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' "$APP/Info.plist")
+          BUILD=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$APP/Info.plist")
+          printf 'Signing: App Store distribution\nBundle: %s\nShare Extension: %s\nVersion/build: %s (%s)\n' "$BUNDLE" "$EXT" "$VERSION" "$BUILD" > release/BUILD-INFO.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ExpertAI-App-Store-signed
+          path: release/
+          if-no-files-found: error
+          retention-days: 14

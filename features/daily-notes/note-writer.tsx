@@ -90,6 +90,7 @@ export function NoteWriter({
   const [saveState, setSaveState] = useState<'saved' | 'pending' | 'error'>('saved');
   const [words, setWords] = useState(() => wordCount(body));
   const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [iosKeyboardVisible, setIosKeyboardVisible] = useState(false);
   const inputRef = useRef<TextInput>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const saveRevisionRef = useRef(0);
@@ -113,10 +114,16 @@ export function NoteWriter({
     }
   }, [visible, noteId, body]);
 
-  // Preserve the Android manual inset path. On iOS, KeyboardAvoidingView owns
-  // the keyboard frame and the same height must not be applied a second time.
+  // Preserve Android's manual inset path. On iOS the safe-area spacer is useful
+  // while the keyboard is hidden, but must be removed while KeyboardAvoidingView
+  // is moving the formatting bar above the keyboard.
   useEffect(() => {
-    if (Platform.OS === 'ios' || Platform.OS === 'web') return;
+    if (Platform.OS === 'web') return;
+    if (Platform.OS === 'ios') {
+      const show = Keyboard.addListener('keyboardWillShow', () => setIosKeyboardVisible(true));
+      const hide = Keyboard.addListener('keyboardWillHide', () => setIosKeyboardVisible(false));
+      return () => { show.remove(); hide.remove(); };
+    }
     const show = Keyboard.addListener('keyboardDidShow', (event) => {
       setKeyboardHeight(event.endCoordinates.height);
     });
@@ -225,11 +232,10 @@ export function NoteWriter({
     onClose();
   };
 
-  // KeyboardAvoidingView already consumes the keyboard frame on iOS. Adding
-  // that same height as permanent bottom padding lifted the editor twice and
-  // pushed it beneath the prediction/accessory row on smaller iPhones.
+  // The iOS toolbar should touch the keyboard while it is visible; retain the
+  // bottom safe area only when the editor is not using the keyboard.
   const bottomPad = Platform.OS === 'ios'
-    ? Math.max(insets.bottom, 8)
+    ? iosKeyboardVisible ? 0 : Math.max(insets.bottom, 8)
     : keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 8);
 
   return (

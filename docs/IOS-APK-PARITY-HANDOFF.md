@@ -593,3 +593,48 @@ use this iOS repository as a behavioral reference.
   safely added, the iOS-complete privacy/provider-retention policy, and
   physical-device acceptance for notifications, task scheduling, auth, archives,
   share extension, keyboard, and iPad layouts.
+
+### Production bundle, local notes, and App Store build path — 20 November 2026
+
+- The owner registered the production App ID `com.ssvasia.expertai` and updated
+  the Google iOS OAuth client for this bundle. The production Expo config now
+  generates app ID `com.ssvasia.expertai`, share extension ID
+  `com.ssvasia.expertai.share-extension`, app group
+  `group.com.ssvasia.expertai`, production APNs entitlement, and the reversed
+  Google OAuth callback scheme. The local-test ID is no longer used on push
+  builds.
+- iOS chat requests now include the local `daily_note` function schema. Gateway
+  retains ownership of `/note` and all slash-command interpretation; the app
+  does not parse slash commands. Returned `daily_note` calls execute on device
+  against local note storage and the tool result is returned for the model's
+  follow-up. Verify that the deployed Gateway forwards the supplied client tool
+  declaration and run read/list/append/replace on device.
+- Fixed two reported iOS UI issues: trial start dismisses the sign-in Modal
+  before presenting the separate terms Modal, and the note editor removes its
+  safe-area spacer while the iOS keyboard is visible so the toolbar sits above
+  the keyboard. Android paths remain unchanged. TypeScript and ESLint checks
+  pass; these interactions still need a device build and acceptance.
+- Added `.github/workflows/ios-production-build.yml` for unsigned production
+  bundle compile/package validation on GitHub `xcode-27`. Added
+  `.github/workflows/ios-app-store-signed.yml` for Xcode automatic distribution
+  signing authenticated with an App Store Connect team API key. It produces a
+  signed IPA artifact; App Store Connect upload, TestFlight setup, and listing
+  metadata are not automated by this workflow.
+- The generated `ios/ExpertAI.xcodeproj` exists after Expo prebuild. The
+  `ios/ExpertAI.xcworkspace` is generated only after `pod install`; CocoaPods is
+  not installed on this Mac. Local Xcode 15.2 cannot build the current App Store
+  SDK target. GitHub Xcode 27 is the build route.
+- The signed path needs `APPLE_TEAM_ID` as a GitHub Actions variable and an
+  App Store Connect team API key (`APP_STORE_CONNECT_KEY_ID`,
+  `APP_STORE_CONNECT_ISSUER_ID`, `APP_STORE_CONNECT_PRIVATE_KEY`) in GitHub
+  Actions secrets. Xcode can manage distribution signing automatically; a
+  hand-created Apple Distribution certificate/profile is not needed for that
+  workflow. The production App ID and group must have App Groups, Push
+  Notifications, and Associated Domains configured; automatic signing must
+  provision both app and extension targets.
+- Archive release blockers remain: validate production Google login, resolve
+  the Sign in with Apple/Guideline 4.8 contract, implement StoreKit if paid
+  digital access is offered in iOS, reconcile privacy/data-retention policy,
+  verify deletion, prepare App Store listing/screenshots/reviewer access, create
+  the App Store Connect record, and complete physical iPhone/iPad acceptance.
+  No production Xcode build or signed IPA has completed yet.
