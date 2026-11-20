@@ -69,6 +69,15 @@ jobs:
         working-directory: ios
         run: pod install
 
+      - name: Cache Xcode build products
+        uses: actions/cache@v4
+        with:
+          path: ~/Library/Developer/Xcode/DerivedData
+          key: >-
+            ios-derived-data-${{ runner.os }}-${{ runner.arch }}-xcode27-${{ hashFiles('yarn.lock', 'ios/Podfile.lock', 'app.json') }}
+          restore-keys: |
+            ios-derived-data-${{ runner.os }}-${{ runner.arch }}-xcode27-
+
       - name: Prepare App Store Connect key for Xcode automatic signing
         env:
           APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY }}
