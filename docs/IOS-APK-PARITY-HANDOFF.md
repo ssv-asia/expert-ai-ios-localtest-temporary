@@ -243,6 +243,30 @@ separate checklist below.
 
 ## APK follow-up (do not change APK source in this migration checkout)
 
+### Instructions for the next Android/APK agent
+
+Before changing the APK, visit the current iOS reference repository at
+<https://github.com/ssv-asia/localtest-temporary> and read its latest
+`main` branch, especially this handoff, the full parity audit inventory below,
+and the current App Store status note. This repository contains the iOS client;
+the APK source lives in the separate Android organization repository. Do not
+assume an item below is still missing: inspect the current APK implementation
+and its documentation first, compare it with the behavior and failure cases
+recorded here, and change the APK only where the comparison confirms a gap or
+bug. Implement the Android equivalent using its own platform patterns rather
+than copying iOS-specific code. Record each item as already satisfied, changed,
+verified, or deferred, with the relevant APK files and test/device evidence.
+
+In particular, the reviewed APK already routes Gateway-returned tool calls
+through generic `/mcp` and handles `daily_note` locally. Preserve that
+Gateway-owned contract; do not hardcode `/note` or invented tool schemas. The
+Gateway's conversational scheduling contract and task-list synchronization
+were not verified, so inspect the deployed/checked-in contract and test the
+full path before changing either client. App Groups, Share Extension setup,
+iOS keyboard/safe-area adjustments, Apple signing, and App Store upload
+automation are iOS-only and should not be ported to the APK.
+
+
 1. Port the conversation-scoped composer state and cancellation generation
    guard to the APK client. Standard, incognito, project, and history chat
    switches must all invalidate pending setup and abort only the foreground
