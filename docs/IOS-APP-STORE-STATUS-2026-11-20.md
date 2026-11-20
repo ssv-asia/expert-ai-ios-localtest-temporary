@@ -1,8 +1,14 @@
 # iOS App Store build status — 20 November 2026
 
+> **Current-state update:** Older checklist entries in this file are a dated
+> activity log and are superseded by the “Current release candidate audit” at
+> the end. The live target is `ssv-asia/localtest-temporary` at
+> `C:\expert-ai-ios-localtest-temporary`; App Store Connect signing credentials
+> are confirmed by successful signed/upload workflow runs later in this log.
+
 ## Current source and production identity
 
-- Source/build repository for this release work: `ssv-asia/localtest-temporary`, `main` baseline, in isolated checkout `C:\expert-ai-apk\expert-ai-ios-reference`. This checkout includes uncommitted iOS-only candidate edits; Android's organization repository remains reference-only.
+- Source/build repository for this release work: `ssv-asia/localtest-temporary`, `main`, in isolated checkout `C:\expert-ai-ios-localtest-temporary`. Android's organization repository remains reference-only.
 - Production bundle ID: `com.ssvasia.expertai`; the old `com.local.expertai` test identity is not used by the production build workflows.
 - Expo prebuild generates `ios/ExpertAI.xcodeproj`; `ios/ExpertAI.xcworkspace` appears after `pod install`. Open the workspace for CocoaPods builds, not the `.xcodeproj` directly.
 - Expo prebuild was run with the production bundle, production APNs entitlement, the owner's updated Google iOS OAuth client ID, and `group.com.ssvasia.expertai`. It generated app ID `com.ssvasia.expertai` and share extension ID `com.ssvasia.expertai.share-extension`.
@@ -70,6 +76,17 @@
 - App Store Connect asked for export-compliance encryption details because this build did not declare `ITSAppUsesNonExemptEncryption` in its Info.plist. Source review found no app-implemented encryption algorithms or separate crypto library; the app uses platform HTTPS and Keychain/SecureStore facilities. For this build, the owner selected “None of the algorithms mentioned above.”
 - Added `expo.ios.infoPlist.ITSAppUsesNonExemptEncryption: false` to `app.json` and committed it to `main` (`0d3cdb7`). This declares no non-exempt encryption for future iOS builds and avoids the repeated question; it does not alter the already uploaded build.
 - The signed IPA upload workflow is `.github/workflows/ios-app-store-upload.yml`; it downloads a specified successful signed artifact, verifies its checksum, then submits it using the configured App Store Connect team API key. Its implementation was merged in commit `83120ff`.
+
+## Current release candidate audit — 20 November 2026
+
+- The iOS source checkout was synced from `origin/main` at `cfeacef888a1a098235bb18d99597c97faabbef2`. Current candidate changes increment `ios.buildNumber` to `3` (version `1.5.3`).
+- Apple sign-in's concrete rejection cause was an algorithm/key-type mismatch: the Gateway required ES256 and EC P-256, while Apple's live identity-token JWKS publishes RSA keys with `alg: RS256`. The Gateway source and cryptographic tests are corrected to RS256 / RSA / RSASSA-PKCS1-v1_5 + SHA-256, preserving issuer, audience, expiry, one-time nonce, and subject checks.
+- Natural daily-note requests missed the Gateway's “daily note(s)” target match when written as “add to my daily notes that …”; the model was therefore not reliably required to invoke the device-local tool. The plural classifier is corrected. iOS tool messages now include their tool name, and a completed/verified local note result is answered deterministically by the Gateway, avoiding another model request that could reject the tool-history format or expose JSON.
+- The StoreKit plan sheet is being aligned with the APK hierarchy and visual treatment. It uses the same eight product identifiers and StoreKit localized prices. If the Pro Monthly SKU is absent from StoreKit's response after reloading, remaining cause is App Store Connect product state/storefront availability, which requires checking in the owner's account; no client-side fallback price is shown as if it were Apple's price.
+- iOS onboarding is now first-run-only and uses a SecureStore flag independent of account state. Settings can still replay the experience. Existing iOS native search font and daily-note keyboard accessory changes are verified in source.
+- Local iOS verification: `yarn tsc --noEmit` and targeted ESLint pass. Gateway `node --check` and all 221 tests pass, including RS256 identity-token and daily-note routing checks. Gateway commit `3bbdfda` is deployed as Worker version `a22539a3-9e16-40ac-82ce-f387cb4a52e5`; production health and the Apple nonce endpoint returned success. Physical iPhone validation remains pending.
+- App Store Connect signing configuration is present: the signed workflow previously completed successfully (run `44732773918`) and the upload workflow completed successfully for build 1 (run `44737319770`). This confirms the workflow credentials and team configuration work; the new build 3 still needs its own signed archive and upload.
+- Next release gates: push the iOS source candidate to `main`; run the signed IPA workflow and its checksum/signature/identity checks; upload that exact artifact; wait for Apple processing; install the build through internal TestFlight and exercise email OTP, Google, Apple, trial, all StoreKit SKUs/restore, daily-note actions, and keyboard layout. The owner must verify any Pro Monthly product not returned by StoreKit in App Store Connect. External TestFlight review and App Review are separate later gates.
 
 
 ## Release work in progress — 20 November 2026

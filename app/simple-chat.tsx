@@ -27,6 +27,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Linking from 'expo-linking';
+import * as SecureStore from 'expo-secure-store';
 import { useMarkdown } from 'react-native-marked';
 
 import { Colors, Fonts } from '@/constants/theme';
@@ -1693,6 +1694,8 @@ export default function SimpleChatScreen() {
   const [signInStatus, setSignInStatus] = useState<'idle' | 'opening' | 'waiting' | 'verifying' | 'error'>('idle');
   const [signInError, setSignInError] = useState<string | null>(null);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingPreferenceLoaded, setOnboardingPreferenceLoaded] = useState(Platform.OS !== 'ios');
+  const [onboardingSeen, setOnboardingSeen] = useState(false);
   // Do not render the signed-out onboarding until the cached session check has
   // finished. Without this gate, a returning signed-in user sees one frame of
   // onboarding while restoreSession() is still resolving.
@@ -1813,17 +1816,52 @@ export default function SimpleChatScreen() {
     return () => subscription.remove();
   }, []);
 
-  // The welcome experience is shown for every signed-out visitor. It is
-  // intentionally session-based rather than first-visit-only: signed-out
-  // visitors should always understand the product before creating an account.
+  // iOS shows the introduction only on first run. Its completion flag is
+  // independent of authentication so signing out does not replay onboarding.
+  // Other platforms retain their established signed-out onboarding behavior.
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    let active = true;
+    void SecureStore.getItemAsync('ios_onboarding_seen_v1')
+      .then((value) => {
+        if (active) setOnboardingSeen(value === 'true');
+      })
+      .catch((error) => {
+        console.warn('[Onboarding] Could not read first-run state:', error);
+      })
+      .finally(() => {
+        if (active) setOnboardingPreferenceLoaded(true);
+      });
+    return () => { active = false; };
+  }, []);
+
   useEffect(() => {
     if (!sessionResolved) return;
     if (session) {
       setOnboardingOpen(false);
       return;
     }
+    if (Platform.OS === 'ios') {
+      if (!onboardingPreferenceLoaded) return;
+      if (onboardingSeen) {
+        setOnboardingOpen(false);
+        return;
+      }
+    }
     setOnboardingOpen(true);
-  }, [session, sessionResolved]);
+  }, [session, sessionResolved, onboardingPreferenceLoaded, onboardingSeen]);
+
+  const dismissOnboarding = useCallback(async () => {
+    if (Platform.OS === 'ios') {
+      try {
+        await SecureStore.setItemAsync('ios_onboarding_seen_v1', 'true');
+        setOnboardingSeen(true);
+      } catch (error) {
+        console.warn('[Onboarding] Could not save first-run state:', error);
+      }
+    }
+    setOnboardingOpen(false);
+  }, []);
 
   useEffect(() => {
     if (!onboardingOpen) return;
@@ -3026,6 +3064,7 @@ export default function SimpleChatScreen() {
                   return {
                     role: 'tool' as const,
                     tool_call_id: tc.id,
+                    name: tc.function.name,
                     content: JSON.stringify(result),
                   } as unknown as ChatMessage;
                 };
@@ -8345,9 +8384,9 @@ export default function SimpleChatScreen() {
       {onboardingOpen ? (
         <WebOnboarding
           targetRects={onboardingTargets}
-          onSkip={() => setOnboardingOpen(false)}
+          onSkip={() => { void dismissOnboarding(); }}
           onCreateAccount={() => {
-            setOnboardingOpen(false);
+            void dismissOnboarding();
             if (session) {
               setAccountOpen(true);
             } else {

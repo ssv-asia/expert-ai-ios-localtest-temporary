@@ -1,5 +1,53 @@
 # Expert AI iOS / APK parity handoff
 
+## Current iOS release candidate — 20 November 2026
+
+This section supersedes older pending-status notes below. The active iOS
+checkout is `C:\expert-ai-ios-localtest-temporary`, repository
+`ssv-asia/localtest-temporary`, branch `main` (synced at
+`cfeacef888a1a098235bb18d99597c97faabbef2` before this update). Android remains
+reference-only; no Android files are being changed.
+
+- Confirmed Sign in with Apple failure: the Gateway verifier accepted only
+  ES256/P-256, while Apple's published `https://appleid.apple.com/auth/keys`
+  currently advertises RSA/RS256 keys. The verifier therefore rejected valid
+  identity tokens before audience, nonce, or account checks. The Gateway patch
+  now verifies RS256 with Apple's RSA JWK; device acceptance still requires a
+  newly deployed Gateway and signed iOS build.
+- Confirmed note-routing gap: `isExplicitDailyNoteAction` matched “daily note”
+  but not “daily notes”, so natural requests such as “add to my daily notes
+  that …” did not force the local tool. The classifier now accepts the plural
+  form. iOS tool-result messages include the standard tool `name`, and the
+  Gateway returns a verified plain-language note result directly after local
+  execution instead of sending tool history through a second provider request.
+  This removes the provider-format failure path on the follow-up and avoids
+  displaying raw note JSON. Verify append/read/replace on the phone.
+- The iOS plan selector now follows the APK plan selector's tier colors, owl
+  artwork, weekly/monthly toggle, selected-plan details, and token/model feature
+  breakdown while using StoreKit localized prices. It reports missing StoreKit
+  products with a reload action and an App Store Connect availability hint. If
+  Pro Monthly remains absent after a reload, confirm that SKU is available for
+  sale in the current App Store Connect storefront; the client cannot make an
+  unavailable product appear.
+- iOS onboarding completion is stored independently from sign-in state, so
+  signing out no longer reopens the first-run introduction. The existing
+  Settings replay action remains available. Android keeps its current behavior.
+- The previously corrected iOS search font (`fontFamily: undefined`) and native
+  daily-note `InputAccessoryView` are already present in this source.
+- iOS build number is incremented to `1.5.3 (3)` to avoid reusing the uploaded
+  build number. Local TypeScript and targeted ESLint pass. The Gateway source
+  check and all 221 Gateway tests pass. Gateway commit `3bbdfda` is deployed as
+  Worker version `a22539a3-9e16-40ac-82ce-f387cb4a52e5`; production health and
+  the Apple nonce endpoint both returned success. Signed build/upload and
+  physical TestFlight acceptance are still pending.
+
+Remaining device checks after upload: email OTP sign-in/create account, Google
+sign-in, Apple sign-in, sign-out/reopen onboarding behavior, trial start, daily
+note via `/note` and normal chat, StoreKit purchase/restore and localized prices
+for all products (especially Pro Monthly), keyboard accessory placement, and
+push notification delivery. A successful compile or upload alone is not device
+acceptance or App Review approval.
+
 ## Owner-confirmed repository scope — 15 November 2026
 
 - This `expert-ai-ios-localtest-temporary` checkout is the editable iOS source

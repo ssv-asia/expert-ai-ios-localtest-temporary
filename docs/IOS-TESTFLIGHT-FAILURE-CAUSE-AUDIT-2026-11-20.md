@@ -1,5 +1,10 @@
 # iOS TestFlight failure cause audit — 20 November 2026
 
+> **Follow-up audit:** The findings below preserve the first source review. The
+> additional concrete causes and corrective changes are recorded in the update
+> at the end of this file; the older “outstanding evidence” statements are
+> historical and should be read with that update.
+
 This audit records source-confirmed causes and evidence gaps before and after
 the corrective edits. Baseline: production iOS source at `fec71b08`; Gateway
 baseline: committed `ea0ae2d` in the archived Gateway repo. No iPhone
@@ -127,3 +132,63 @@ Apple transaction verification; a UI-only purchase button would not be safe.
 ## Not modified during this audit
 
 Android source and behavior remain outside scope and are unchanged.
+
+## Follow-up findings and fixes — 20 November 2026
+
+### Sign in with Apple
+
+The previous source audit described Gateway verification as ES256. Inspection of
+the live Apple identity-token JWKS (`https://appleid.apple.com/auth/keys`)
+showed its signing keys are RSA with `alg: RS256`. The Gateway verifier required
+ES256 and EC/P-256, so a valid native identity token failed immediately with
+“Unsupported Apple identity token signature” before nonce, audience, or user
+mapping checks. The verifier now imports the matching RSA JWK and verifies
+RSASSA-PKCS1-v1_5 with SHA-256. Claims and one-time nonce checks remain intact.
+Cryptographic tests generate and verify a valid RS256 token and reject wrong
+algorithm and nonce cases. The fix still needs Gateway deployment and a signed
+device sign-in to verify the full Apple-to-account flow.
+
+### Daily notes
+
+The natural-language action detector matched singular “daily note” but not
+plural “daily notes”. The common request “add to my daily notes that …” could
+therefore be treated as ordinary model selection rather than an explicit local
+note action, making tool invocation dependent on the provider and allowing
+unstructured/raw output. The target regex now accepts singular and plural.
+Additionally, iOS tool-result messages now carry the OpenAI-compatible `name`
+field, and the Gateway responds deterministically after it verifies the local
+note result instead of sending tool-call history through another provider
+request. This removes the follow-up provider rejection path and prevents the
+app from exposing raw JSON or falsely claiming a write. TestFlight/device
+verification remains required for actual local persistence and `/note` UI flow.
+
+### Onboarding, plans, and adjacent reported issues
+
+- The onboarding effect reopened the introduction whenever the session became
+  null after sign-out. iOS now persists first-run completion in SecureStore;
+  the Settings replay control remains. Android behavior is unchanged.
+- The iOS StoreKit sheet was a basic list and omitted the APK's owl artwork,
+  tier-color cards, and feature breakdown. It now follows that hierarchy and
+  shows StoreKit localized prices. The code uses the configured eight SKUs. A
+  Pro Monthly product absent from StoreKit must still be diagnosed in App Store
+  Connect for the current storefront; the client cannot guarantee a product
+  Apple does not return.
+- The search field already uses the iOS system font and the note toolbar is
+  already a native `InputAccessoryView` in the current source; neither required
+  an additional source correction in this follow-up.
+- The trial transport status-zero fix and email/Google client paths were
+  re-inspected; no new source-level blocker was found in this update. Their
+  success still requires live TestFlight authentication and device evidence.
+
+### Verification and remaining gates
+
+- iOS TypeScript compilation and targeted ESLint pass.
+- Gateway syntax check passes and all 221 Gateway tests pass, including the new
+  RS256 and plural daily-note cases.
+- `app.json` now targets version `1.5.3`, build `3`; the earlier uploaded build
+  was build `1`.
+- Gateway commit `3bbdfda` is deployed as Worker version
+  `a22539a3-9e16-40ac-82ce-f387cb4a52e5`; production health and Apple nonce
+  smoke checks pass. A new signed IPA build/upload, App Store processing, and
+  internal TestFlight device checks remain outstanding. No claim of end-to-end
+  release readiness is made until those checks pass.
