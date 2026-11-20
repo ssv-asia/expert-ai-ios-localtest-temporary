@@ -359,12 +359,6 @@ interface StreamOptions {
   model: string;
   /** Lets the caller cancel an in-flight request (stop-generation button). */
   signal?: AbortSignal;
-  /** Optional app-local tools. The Gateway routes compatible tool calls back
-   *  through the same streamed tool-call contract as its server tools. */
-  tools?: readonly {
-    type: 'function';
-    function: { name: string; description: string; parameters: Record<string, unknown> };
-  }[];
 }
 
 /**
@@ -373,7 +367,7 @@ interface StreamOptions {
  */
 export async function streamChatCompletion(
   messages: ChatMessage[],
-  { token, model, signal, tools }: StreamOptions,
+  { token, model, signal }: StreamOptions,
   { onDelta, onDone, onError, onToolCalls, onPhase, onModel }: StreamCallbacks,
 ): Promise<void> {
   // Timing instrumentation for the "sometimes just sits there" complaint —
@@ -406,7 +400,10 @@ export async function streamChatCompletion(
           'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ model, messages, stream: true, ...(tools?.length ? { tools } : {}) }),
+        // The Gateway injects its MCP schemas server-side. Keep this request
+        // shape identical to the APK so client tools cannot override or narrow
+        // the Gateway's tool catalogue.
+        body: JSON.stringify({ model, messages, stream: true }),
       },
       { signal, attemptTimeoutMs: 20000, retries: 2 },
     );

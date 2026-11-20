@@ -603,12 +603,12 @@ use this iOS repository as a behavioral reference.
   `group.com.ssvasia.expertai`, production APNs entitlement, and the reversed
   Google OAuth callback scheme. The local-test ID is no longer used on push
   builds.
-- iOS chat requests now include the local `daily_note` function schema. Gateway
-  retains ownership of `/note` and all slash-command interpretation; the app
-  does not parse slash commands. Returned `daily_note` calls execute on device
-  against local note storage and the tool result is returned for the model's
-  follow-up. Verify that the deployed Gateway forwards the supplied client tool
-  declaration and run read/list/append/replace on device.
+- iOS chat uses the same `{model, messages, stream}` request shape as the APK;
+  the Gateway injects its tool schemas server-side. The app handles returned
+  `daily_note` calls on-device against local note storage and returns the result
+  for the model's follow-up. `/note` remains Gateway-owned and the client does
+  not send a tool list or parse slash commands. Verify that the deployed Gateway
+  emits `daily_note` and run read/list/append/replace on device.
 - Fixed two reported iOS UI issues: trial start dismisses the sign-in Modal
   before presenting the separate terms Modal, and the note editor removes its
   safe-area spacer while the iOS keyboard is visible so the toolbar sits above

@@ -155,7 +155,6 @@ import {
   recentNotesBlock,
   saveDailyNoteBody,
   executeDailyNoteTool,
-  DAILY_NOTE_TOOL,
   type DailyNote,
 } from '@/lib/daily-notes';
 import { useAppSettingsStore } from '@/features/settings/store';
@@ -2872,10 +2871,6 @@ export default function SimpleChatScreen() {
             token,
             model: modelId,
             signal: controller.signal,
-            // The Gateway owns slash-command interpretation. Advertise only
-            // this iOS-local capability so it can route note requests back to
-            // the app's existing on-device tool executor.
-            ...(Platform.OS === 'ios' ? { tools: [DAILY_NOTE_TOOL] } : {}),
           },
           {
             onPhase: (phase) => {

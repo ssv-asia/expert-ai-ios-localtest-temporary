@@ -30,37 +30,6 @@ const notesPath = `${FileSystem.documentDirectory}${STORAGE_KEY}.json`;
 const notesBackupPath = `${notesPath}.bak`;
 const notesTempPath = `${notesPath}.tmp`;
 
-/** Client-local tool advertised to the Gateway with iOS chat requests. Slash
- * commands remain Gateway-owned; the model can call this tool for local note
- * reads and edits, which the app executes on-device. */
-export const DAILY_NOTE_TOOL = {
-  type: 'function',
-  function: {
-    name: 'daily_note',
-    description: "Access the user's private, device-local daily notes. Use this when they ask to read, find, create, or update a daily note. For adding content, append it; only replace when they explicitly ask to rewrite the whole note.",
-    parameters: {
-      type: 'object',
-      properties: {
-        action: {
-          type: 'string',
-          enum: ['read', 'list', 'create', 'append', 'replace'],
-          description: 'Use read for a date (or today by default), list to find notes, create for a new date, append to preserve existing writing, or replace only on explicit rewrite requests.',
-        },
-        date: {
-          type: 'string',
-          description: 'Optional local note date in YYYY-MM-DD format. Defaults to today.',
-        },
-        content: {
-          type: 'string',
-          description: 'Text to append or replace. Required for append and replace.',
-        },
-      },
-      required: [],
-      additionalProperties: false,
-    },
-  },
-} as const;
-
 // Keep the on-device archive bounded — a year of notes is plenty and keeps the
 // single-file read/write cheap. Oldest are dropped first.
 const MAX_NOTES = 400;

@@ -12,7 +12,7 @@
 
 - **Trial start:** On iOS, the sign-in sheet now dismisses before the separate trial terms modal opens. Previously both native modals were presented at once, matching the reported unresponsive trial button. Android's flow is unchanged. Verify the full `/auth/trial` → `/auth/poll` and SecureStore flow on a device.
 - **Daily-note editor keyboard:** While iOS keyboard is visible, the editor no longer keeps the bottom safe-area spacer beneath its formatting toolbar. `KeyboardAvoidingView` can position the toolbar directly above the keyboard. Android's inset path is unchanged. Verify on iPhone and iPad with prediction row and floating/split keyboards.
-- **Daily note in chat:** iOS now advertises its local `daily_note` tool schema in chat requests, and the existing on-device executor performs read/list/create/append/replace and returns the result to the model for its follow-up. The `/note` command is still forwarded untouched for Gateway handling; the app does not parse or hardcode slash commands. Verify the deployed Gateway forwards the client tool declaration and test read/add/replace on device.
+- **Daily note in chat:** iOS matches the APK request contract: the Gateway injects tool schemas server-side, and iOS executes a returned `daily_note` call against device-local notes before returning the result for the model's follow-up. The client sends no tool list and does not parse slash commands; `/note` remains Gateway-owned. Verify the deployed Gateway emits `daily_note` and test read/add/replace on device.
 - **Android image generation:** Recorded as an Android-only report; no Android source or package was changed in this iOS task.
 
 ## Build paths
