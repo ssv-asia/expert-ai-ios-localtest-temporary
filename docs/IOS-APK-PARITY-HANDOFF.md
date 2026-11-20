@@ -643,4 +643,27 @@ use this iOS repository as a behavioral reference.
   digital access is offered in iOS, reconcile privacy/data-retention policy,
   verify deletion, prepare App Store listing/screenshots/reviewer access, create
   the App Store Connect record, and complete physical iPhone/iPad acceptance.
-  No production Xcode build or signed IPA has completed yet.
+  A production Xcode compile and unsigned IPA have completed; no signed IPA has
+  completed yet.
+
+## Verified Gateway-parity production build — 20 November 2026
+
+- Source SHA `f60357bcf1cda4e02e1d3124fd740bd6d85ae783` removes the client
+  `tools` list from iOS Gateway chat requests, matching the APK contract and
+  leaving full tool injection to the Gateway. The app still executes returned
+  `daily_note` calls locally.
+- GitHub Actions run
+  [44657768664](https://github.com/ssv-asia/expert-ai-ios-localtest-temporary/actions/runs/44657768664)
+  completed successfully. Artifact `ExpertAI-production-unsigned`, ID
+  `14595111498`, expires 27 November 2026; artifact digest
+  `sha256:2ae55c102c5e5a9722f03525ae8d4f0f5fd864e19dbe5add660b89ebe92402ef`.
+- Downloaded IPA SHA-256:
+  `2ebe7cd9befb7a3334b8b65978120b72745c6916dd08c272f639c10cb3516775`.
+  ZIP integrity passed. Bundle IDs are `com.ssvasia.expertai` and
+  `com.ssvasia.expertai.share-extension` (version 1.5.3, build 1).
+- The artifact is unsigned, has no embedded provisioning profile or code
+  signature, and cannot be installed normally or submitted to App Store Connect.
+  The signed workflow still requires the owner's App Store Connect API key and
+  team ID as GitHub Actions configuration. Run 44660079330 was dispatched as a
+  replacement while the above build appeared stalled; it is redundant now that
+  run 44657768664 succeeded.
