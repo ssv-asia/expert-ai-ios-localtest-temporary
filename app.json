@@ -161,6 +161,7 @@
       "./plugins/withAndroidStaticShortcuts.js",
       "./plugins/withAndroidBilling.js",
       "./plugins/withIosQuickActions.js",
+      "./plugins/withIosPodDeploymentTarget.js",
       "@react-native-google-signin/google-signin",
       [
         "expo-local-authentication",

@@ -620,6 +620,12 @@ use this iOS repository as a behavioral reference.
   signing authenticated with an App Store Connect team API key. It produces a
   signed IPA artifact; App Store Connect upload, TestFlight setup, and listing
   metadata are not automated by this workflow.
+- First production CI run `44652059778` (commit `5a60133`) passed Expo prebuild,
+  OAuth/bundle/capability checks, and CocoaPods installation, then failed at
+  Xcode build because several third-party Pod targets were below Xcode 27's
+  minimum supported iOS deployment target. Added an iOS Podfile config plugin
+  to raise only outdated Pod targets to the app's iOS 16.0 minimum. Rebuild the
+  next commit and keep this failure/result in the release record.
 - The generated `ios/ExpertAI.xcodeproj` exists after Expo prebuild. The
   `ios/ExpertAI.xcworkspace` is generated only after `pod install`; CocoaPods is
   not installed on this Mac. Local Xcode 15.2 cannot build the current App Store

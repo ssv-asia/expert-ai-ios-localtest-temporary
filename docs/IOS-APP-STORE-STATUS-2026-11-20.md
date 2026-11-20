@@ -18,6 +18,7 @@
 ## Build paths
 
 - `.github/workflows/ios-production-build.yml` builds an unsigned Release IPA for `com.ssvasia.expertai` on GitHub's `xcode-27` runner. It validates the production app and share extension IDs, APNs entitlement, app group, Google callback, arm64, iOS 16 minimum, and IPA ZIP integrity. This is a compile/package proof only; an unsigned IPA cannot be uploaded to App Store Connect.
+- The first production run, `44652059778` on commit `5a60133`, used Xcode 27.1 and passed prebuild, dependency installation, and production identity checks. The native build stopped because older third-party Pods declared iOS 9–12.4, below Xcode 27's supported deployment-target range. A new iOS Podfile config plugin raises only pod targets below the app's iOS 16 minimum to 16.0; a corrected CI run is pending.
 - `.github/workflows/ios-app-store-signed.yml` is the signed path. It uses Xcode automatic distribution signing authenticated through an App Store Connect team API key, then exports a signed App Store IPA. The account owner must add `APPLE_TEAM_ID` as a GitHub Actions variable and `APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, and `APP_STORE_CONNECT_PRIVATE_KEY` as Actions secrets. The private key must stay in GitHub Secrets; do not paste it into chat or commit it.
 - With Xcode automatic signing, a separately hand-created Apple Distribution certificate and provisioning profile are not necessary for this workflow. Xcode manages distribution signing through the team API key. The App ID must have the capabilities used by the app: App Groups (`group.com.ssvasia.expertai`), Push Notifications, and Associated Domains (`applinks:ssv.asia`). The share-extension App ID/profile must also be provisioned.
 - Local machine check: Xcode 15.2 / iOS 17.2 SDK, no signing identity installed, and no CocoaPods executable detected. This local toolchain cannot make the required current App Store archive. GitHub Xcode 27 is the build route.
@@ -36,4 +37,5 @@
 
 - Production `expo prebuild --platform ios --clean --no-install` completed.
 - `expo config --type public --json` resolved bundle `com.ssvasia.expertai`, Google client `1093163336745-1m9gq2ka957532pd75mr339kltu8muop.apps.googleusercontent.com`, reversed callback scheme `com.googleusercontent.apps.1093163336745-1m9gq2ka957532pd75mr339kltu8muop`, production APNs mode, extension ID, and app group.
+- The pod deployment-target config plugin was added and regenerated into the ignored iOS Podfile; it leaves the app's supported minimum at iOS 16.0.
 - No production Xcode build or signed IPA has completed yet. Record the exact source SHA, Actions run URL, artifact ID, signature, checksum, and App Store Connect processing result after the workflows run.
