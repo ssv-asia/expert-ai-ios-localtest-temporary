@@ -37,6 +37,7 @@ import { AECKnowledgeService } from '@/lib/aec-knowledge-service';
 import { executeMcpToolOnGateway, getMcpToolPermission, isMcpToolApprovalRequired } from '@/lib/mcp-tool-executor';
 import { SimpleChatSettings } from '@/components/simple-chat-settings';
 import { GoogleSignInButton, clearGoogleAccount, isGoogleSignInAvailable } from '@/components/google-sign-in-button';
+import { AppleSignInButton } from '@/components/apple-sign-in-button';
 import { VoiceInputButton, VoiceRecordingIndicator } from '@/components/voice-input-button';
 import { checkForFlexibleUpdate, installDownloadedUpdate } from '@/lib/in-app-update';
 import NetInfo from '@react-native-community/netinfo';
@@ -55,6 +56,7 @@ import { WebBalanceSummary } from '@/components/web-balance-summary';
 import { cancelTierSubscription, fetchPaymentHistory } from '@/lib/web-account-actions';
 import { WebOnboarding } from '@/features/onboarding/components/web-onboarding';
 import { MobilePlanOverview } from '@/components/mobile-plan-overview';
+import { AppleSubscriptions } from '@/features/billing/apple-subscriptions';
 import { acknowledgePlayPurchase, prefetchPlayProducts, queryPlayPurchases } from '@/lib/play-billing';
 import { TIER_PRODUCT_IDS } from '@/lib/plan-catalog';
 import { makeDocumentId, saveDocument } from '@/lib/documents-store';
@@ -5813,7 +5815,9 @@ export default function SimpleChatScreen() {
             autoFocus
             style={{
               flex: 1,
-              fontFamily: Fonts.sans,
+              // Keep iOS chat search visually native; the custom DM Sans face
+              // appears unusually wide in this compact single-line field.
+              fontFamily: Platform.OS === 'ios' ? undefined : Fonts.sans,
               fontSize: 14,
               color: colors.text,
               backgroundColor: colors.buttonBackground,
@@ -7178,7 +7182,18 @@ export default function SimpleChatScreen() {
                 </View>
               ))}
             </View>
-            </> : (
+            </> : Platform.OS === 'ios' ? (
+              <AppleSubscriptions
+                colors={colors}
+                onEntitlementUpdated={(nextBalance, nextAccount, token) => {
+                  confirmedBalanceByToken.set(token, nextBalance);
+                  setBalance(nextBalance);
+                  setBalanceToken(token);
+                  setAccountInfo(nextAccount);
+                  setAccountInfoToken(token);
+                }}
+              />
+            ) : (
               <View style={{ marginTop: 18, padding: 14, borderRadius: 14, backgroundColor: colors.buttonBackground }}>
                 <Text style={{ fontFamily: Fonts.sansSemiBold, fontSize: 16, color: colors.text }}>
                   Plan purchases
@@ -8018,20 +8033,29 @@ export default function SimpleChatScreen() {
                 <Text style={{ fontFamily: Fonts.sans, fontSize: 13, color: colors.textSecondary, textDecorationLine: 'underline' }}>Resend code</Text>
               </Pressable>
             ) : null}
-            {Platform.OS === 'android' || Platform.OS === 'web' ||
-            (Platform.OS === 'ios' && isGoogleSignInAvailable()) ? (
+            {Platform.OS === 'ios' || Platform.OS === 'android' || Platform.OS === 'web' ? (
               <>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10, marginTop: 14 }}>
                   <View style={{ flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }} />
                   <Text style={{ fontFamily: Fonts.sans, fontSize: 12, color: colors.textTertiary }}>or</Text>
                   <View style={{ flex: 1, height: StyleSheet.hairlineWidth, backgroundColor: colors.border }} />
                 </View>
-                <GoogleSignInButton
-                  isDark={isDark}
-                  disabled={signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
-                  onSuccess={handleGoogleSignInSuccess}
-                  onError={handleGoogleSignInError}
-                />
+                {Platform.OS === 'ios' ? (
+                  <AppleSignInButton
+                    isDark={isDark}
+                    disabled={signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
+                    onSuccess={handleGoogleSignInSuccess}
+                    onError={handleGoogleSignInError}
+                  />
+                ) : null}
+                {Platform.OS !== 'ios' || isGoogleSignInAvailable() ? (
+                  <GoogleSignInButton
+                    isDark={isDark}
+                    disabled={signInStatus === 'opening' || signInStatus === 'waiting' || signInStatus === 'verifying'}
+                    onSuccess={handleGoogleSignInSuccess}
+                    onError={handleGoogleSignInError}
+                  />
+                ) : null}
               </>
             ) : null}
             <Pressable

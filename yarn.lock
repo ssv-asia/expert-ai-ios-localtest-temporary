@@ -5714,6 +5714,7 @@ __metadata:
     eslint: "npm:^9.25.0"
     eslint-config-expo: "npm:~10.0.0"
     expo: "npm:~54.0.33"
+    expo-apple-authentication: "npm:~8.0.8"
     expo-asset: "npm:~12.0.13"
     expo-audio: "npm:~1.1.1"
     expo-build-properties: "npm:~1.0.10"
@@ -5725,6 +5726,7 @@ __metadata:
     expo-file-system: "npm:~19.0.24"
     expo-font: "npm:~14.0.11"
     expo-haptics: "npm:~15.0.8"
+    expo-iap: "npm:6.5.1"
     expo-image: "npm:~3.0.11"
     expo-image-manipulator: "npm:~14.0.8"
     expo-image-picker: "npm:~17.0.10"
@@ -5772,6 +5774,16 @@ __metadata:
     zustand: "npm:^5.0.12"
   languageName: unknown
   linkType: soft
+
+"expo-apple-authentication@npm:~8.0.8":
+  version: 8.0.8
+  resolution: "expo-apple-authentication@npm:8.0.8"
+  peerDependencies:
+    expo: "*"
+    react-native: "*"
+  checksum: 10c0/6b5179de9a6d4340a35c8487781919f05f9b8170e98fcce5bf7de4e68b9df84b0a77991851b0210c1976d5673070378d8f89562d6d2f37371307e642a25446b1
+  languageName: node
+  linkType: hard
 
 "expo-application@npm:~7.0.8":
   version: 7.0.8
@@ -5954,6 +5966,24 @@ __metadata:
   peerDependencies:
     expo: "*"
   checksum: 10c0/25f58bbbb5faa0d05701ada7f1247adead98a7e30dcbac136aa3e458773584ac758318a02d906de7ba85d63cbd45e7edde3dc35e61825f0dc1e8ed20668ed594
+  languageName: node
+  linkType: hard
+
+"expo-iap@npm:6.5.1":
+  version: 6.5.1
+  resolution: "expo-iap@npm:6.5.1"
+  peerDependencies:
+    "@amazon-devices/keplerscript-appstore-iap-lib": ~2.13.0
+    "@amazon-devices/package-manager-lib": ~1.0.1767254401
+    expo: "*"
+    react: "*"
+    react-native: "*"
+  peerDependenciesMeta:
+    "@amazon-devices/keplerscript-appstore-iap-lib":
+      optional: true
+    "@amazon-devices/package-manager-lib":
+      optional: true
+  checksum: 10c0/eda36736739bebe2b65472c525773821fea6a3a98abf39538614a804e0972476f563651fc34d34e7108b9614100f6d5d0bc218f9ef3b4ad5264a13a5e6a1fb8f
   languageName: node
   linkType: hard
 

@@ -62,6 +62,7 @@ jobs:
           const entitlements = JSON.parse(execFileSync('plutil', ['-convert', 'json', '-o', '-', 'ios/ExpertAI/ExpertAI.entitlements'], { encoding: 'utf8' }));
           if (entitlements['aps-environment'] !== 'production') throw new Error('Production APNs entitlement is missing.');
           if (entitlements['com.apple.security.application-groups']?.[0] !== 'group.com.ssvasia.expertai') throw new Error('Production app group is missing.');
+          if (!entitlements['com.apple.developer.applesignin']?.includes('Default')) throw new Error('Sign in with Apple capability is missing.');
           NODE
 
       - name: Install CocoaPods

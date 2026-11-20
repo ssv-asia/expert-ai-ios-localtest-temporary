@@ -83,6 +83,13 @@ function nativeAuthRequest(url: string, options: RequestInit, timeoutMs: number)
       }
       xhr.onreadystatechange = () => {
         if (xhr.readyState !== 4) return;
+        // A status of zero is a native transport failure, not an HTTP response.
+        // Reject it on iOS so fetchWithTimeout can try the next Gateway origin;
+        // Android keeps its established request behavior unchanged.
+        if (Platform.OS === 'ios' && xhr.status === 0) {
+          finish(() => reject(new Error('Network request failed')));
+          return;
+        }
         finish(() => resolve({
           status: xhr.status,
           ok: xhr.status >= 200 && xhr.status < 300,
@@ -626,6 +633,45 @@ export async function signInWithGoogleIdToken(idToken: string): Promise<Session>
   const data = await response.json().catch(() => ({}));
   if (!response.ok || !data?.ok || !data?.token) {
     throw new Error(data?.error || `Google sign-in failed (${response.status})`);
+  }
+  const payload = decodeSessionToken(data.token);
+  const session: Session = {
+    token: data.token,
+    email: data.email ?? payload?.e ?? '',
+    tier: (payload?.t as Tier) ?? 'community',
+    expiresAt: payload?.exp ?? Math.floor(Date.now() / 1000) + 30 * 24 * 60 * 60,
+  };
+  await persist(session);
+  return session;
+}
+
+/** Request a short-lived, single-use nonce before presenting Apple's native sheet. */
+export async function createAppleSignInNonce(): Promise<{ nonce: string; requestNonce: string }> {
+  const response = await fetchWithTimeout(`${GATEWAY_BASE_URL}/auth/apple/nonce`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({}),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.nonce || !data?.requestNonce) {
+    throw new Error(data?.error || `Could not start Apple sign-in (${response.status})`);
+  }
+  // Apple hashes a raw nonce before returning it in the identity token. The
+  // Gateway stores the corresponding hash and consumes the raw nonce exactly
+  // once, so a replay cannot produce another app session.
+  return { nonce: String(data.nonce), requestNonce: String(data.requestNonce) };
+}
+
+/** Exchange Apple's native identity token for the same Expert AI session used by OTP/Google. */
+export async function signInWithAppleIdentityToken(identityToken: string, nonce: string): Promise<Session> {
+  const response = await fetchWithTimeout(`${GATEWAY_BASE_URL}/auth/apple/verify`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ identity_token: identityToken, nonce }),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok || !data?.token) {
+    throw new Error(data?.error || `Apple sign-in failed (${response.status})`);
   }
   const payload = decodeSessionToken(data.token);
   const session: Session = {

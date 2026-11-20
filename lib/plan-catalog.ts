@@ -64,3 +64,15 @@ export const TIER_PRODUCT_IDS: Record<number, string> = {
   13: 'expert_ai_max',
   14: 'expert_ai_founder',
 };
+
+/** App Store Connect auto-renewable subscription IDs. Prices come from StoreKit
+ * so customers see the localized storefront price instead of an INR conversion. */
+export const APPLE_SUBSCRIPTION_IDS: Record<number, Record<PlanBillingPeriod, string>> = {
+  11: { weekly: 'com.ssvasia.expertai.essential.weekly', monthly: 'com.ssvasia.expertai.essential.monthly' },
+  12: { weekly: 'com.ssvasia.expertai.pro.weekly', monthly: 'com.ssvasia.expertai.pro.monthly' },
+  13: { weekly: 'com.ssvasia.expertai.max.weekly', monthly: 'com.ssvasia.expertai.max.monthly' },
+  14: { weekly: 'com.ssvasia.expertai.founder.weekly', monthly: 'com.ssvasia.expertai.founder.monthly' },
+};
+
+export const APPLE_SUBSCRIPTION_SKUS = Object.values(APPLE_SUBSCRIPTION_IDS)
+  .flatMap((periods) => [periods.weekly, periods.monthly]);

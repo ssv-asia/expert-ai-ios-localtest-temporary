@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Keyboard,
   KeyboardAvoidingView,
+  InputAccessoryView,
   Modal,
   Platform,
   Pressable,
@@ -238,6 +239,17 @@ export function NoteWriter({
     ? iosKeyboardVisible ? 0 : Math.max(insets.bottom, 8)
     : keyboardHeight > 0 ? keyboardHeight : Math.max(insets.bottom, 8);
 
+  const renderToolbar = () => (
+    <View style={[styles.toolbar, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
+      <ToolIcon icon="checkbox-outline" color={colors.text} onPress={() => applyPrefix('task')} />
+      <ToolIcon icon="text-outline" color={colors.text} onPress={() => applyPrefix('heading')} />
+      <ToolIcon icon="list-outline" color={colors.text} onPress={() => applyPrefix('bullet')} />
+      <ToolIcon icon="chatbox-ellipses-outline" color={colors.text} onPress={() => applyPrefix('quote')} />
+      <View style={{ flex: 1 }} />
+      <ToolIcon icon="chevron-down" color={colors.textSecondary} onPress={() => Keyboard.dismiss()} />
+    </View>
+  );
+
   return (
     <Modal visible={visible} animationType="slide" onRequestClose={close}>
       <View style={[styles.root, { backgroundColor: colors.background, paddingTop: insets.top }]}>
@@ -354,6 +366,7 @@ export function NoteWriter({
                 onBlur={() => persistNow(draftRef.current)}
                 multiline
                 autoFocus
+                inputAccessoryViewID={Platform.OS === 'ios' ? 'daily-note-format-toolbar' : undefined}
                 placeholder="Start writing…"
                 placeholderTextColor={colors.textTertiary}
                 style={[styles.editor, { color: colors.text }]}
@@ -362,15 +375,9 @@ export function NoteWriter({
                 autoCorrect
                 keyboardAppearance={isDark ? 'dark' : 'default'}
               />
-              {/* Formatting accessory bar — thin, icon-only, rides above keyboard */}
-              <View style={[styles.toolbar, { backgroundColor: colors.surfaceRaised, borderColor: colors.border }]}>
-                <ToolIcon icon="checkbox-outline" color={colors.text} onPress={() => applyPrefix('task')} />
-                <ToolIcon icon="text-outline" color={colors.text} onPress={() => applyPrefix('heading')} />
-                <ToolIcon icon="list-outline" color={colors.text} onPress={() => applyPrefix('bullet')} />
-                <ToolIcon icon="chatbox-ellipses-outline" color={colors.text} onPress={() => applyPrefix('quote')} />
-                <View style={{ flex: 1 }} />
-                <ToolIcon icon="chevron-down" color={colors.textSecondary} onPress={() => Keyboard.dismiss()} />
-              </View>
+              {/* iOS attaches the toolbar to the native keyboard. Android keeps
+                  its existing in-layout toolbar and keyboard inset behavior. */}
+              {Platform.OS !== 'ios' || !iosKeyboardVisible ? renderToolbar() : null}
             </>
           ) : (
             <ScrollView
@@ -396,6 +403,11 @@ export function NoteWriter({
             </ScrollView>
           )}
         </KeyboardAvoidingView>
+        {Platform.OS === 'ios' && mode === 'write' ? (
+          <InputAccessoryView nativeID="daily-note-format-toolbar" backgroundColor={colors.surfaceRaised}>
+            {renderToolbar()}
+          </InputAccessoryView>
+        ) : null}
       </View>
     </Modal>
   );

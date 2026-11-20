@@ -349,7 +349,7 @@ interface StreamCallbacks {
   /** Called instead of onDone when the model's turn ends by requesting tool calls
    *  (finish_reason "tool_calls"). Caller is responsible for executing the tools and
    *  re-invoking streamChatCompletion with the extended history for the final answer. */
-  onToolCalls?: (toolCalls: StreamedToolCall[]) => void;
+  onToolCalls?: (toolCalls: StreamedToolCall[]) => void | Promise<void>;
   onPhase?: (phase: 'connecting' | 'thinking' | 'using_tool' | 'synthesizing' | 'complete' | 'error') => void;
   onModel?: (servedModel: string) => void;
 }
@@ -491,7 +491,9 @@ export async function streamChatCompletion(
           logStreamTiming(model, t0, ttfbMs, firstTokenMs, undefined, servedModel, lastGatewayRequestId);
           if (finishReason === 'tool_calls' && toolCallsByIndex.size > 0 && onToolCalls) {
             onPhase?.('using_tool');
-            onToolCalls(Array.from(toolCallsByIndex.values()));
+            const pendingToolHandling = onToolCalls(Array.from(toolCallsByIndex.values()));
+            // Keep iOS local tool execution and follow-up inside the send lifecycle.
+            if (Platform.OS === 'ios') await pendingToolHandling;
             return;
           }
           onPhase?.('complete');
@@ -591,7 +593,8 @@ export async function streamChatCompletion(
     logStreamTiming(model, t0, ttfbMs, firstTokenMs, undefined, servedModel, lastGatewayRequestId);
     if (finishReason === 'tool_calls' && toolCallsByIndex.size > 0 && onToolCalls) {
       onPhase?.('using_tool');
-      onToolCalls(Array.from(toolCallsByIndex.values()));
+      const pendingToolHandling = onToolCalls(Array.from(toolCallsByIndex.values()));
+      if (Platform.OS === 'ios') await pendingToolHandling;
       return;
     }
     // A clean transport close with no text is not a successful answer. Treat
@@ -686,6 +689,17 @@ export async function verifyGooglePlaySubscription(token: string, input: { produ
 }
 
 // ---------------------------------------------------------------------------
+/** Verify an App Store transaction with Apple's server before finishing StoreKit. */
+export async function verifyAppleSubscription(token: string, input: { productId: string; transactionId: string; signedTransaction?: string }): Promise<void> {
+  const response = await resilientFetch('/billing/apple/verify', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !data?.ok) throw new Error(data?.error?.message || data?.error || 'App Store purchase could not be verified yet.');
+}
+
 // Content reporting — Google Play's AI-Generated Content policy requires an
 // in-app way to flag an offensive/harmful/incorrect AI reply without leaving
 // the chat. Fire-and-forget from the UI's point of view: the worker just logs
