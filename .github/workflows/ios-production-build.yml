@@ -5,6 +5,10 @@ on:
   push:
     branches:
       - codex/ios-platform-fixes-20261114
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+      - '.github/workflows/ios-production-build.yml'
 
 permissions:
   contents: read

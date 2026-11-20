@@ -667,3 +667,6 @@ use this iOS repository as a behavioral reference.
   team ID as GitHub Actions configuration. Run 44660079330 was dispatched as a
   replacement while the above build appeared stalled; it is redundant now that
   run 44657768664 succeeded.
+- The unsigned workflow's push trigger now skips documentation-only and
+  workflow-file-only updates, avoiding expensive native compiles for handoff
+  changes. Use its manual dispatch only when an unsigned compile is useful.
